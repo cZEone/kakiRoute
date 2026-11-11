@@ -62,6 +62,8 @@ async function refresh() {
 }
 
 function renderHome() {
+  $("#decide-wrap").hidden = routes.length < 2;
+  renderDecision();
   const list = $("#routes");
   list.replaceChildren();
   $("#empty").hidden = routes.length > 0;
@@ -73,7 +75,9 @@ function renderHome() {
 function routeCard(route, idx, plan, now) {
   const first = route.legs[0];
   const loading = !lastFetch;
-  const card = el("article", { class: `card ${loading ? "" : plan.status}` });
+  const picked = decision && !decision.error && decision.choice === idx;
+  const card = el("article", { class: `card ${loading ? "" : plan.status}${picked ? " suggested" : ""}` });
+  if (picked) card.append(el("span", { class: "ai-badge" }, "AI pick"));
 
   card.append(
     el("div", { class: "card-head" },
@@ -126,6 +130,8 @@ function routeCard(route, idx, plan, now) {
   card.append(ol);
 
   if (plan.arriveAt) card.append(el("p", { class: "arrive" }, `Arrive around ${clock(plan.arriveAt)} (if you leave now)`));
+  const note = decision && !decision.error ? decision.notes?.[idx] : null;
+  if (note) card.append(el("p", { class: "ai-note" }, note));
   return card;
 }
 
@@ -137,6 +143,68 @@ function problemText(p, leg) {
     default: return "No timing";
   }
 }
+
+// ---------- Help me decide (AI) ----------
+let decision = null;
+
+async function helpMeDecide() {
+  const btn = $("#decide");
+  btn.disabled = true;
+  btn.textContent = "Comparing your routes…";
+  try {
+    const r = await fetch("/api/decide", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ routes }),
+    });
+    decision = await r.json();
+  } catch {
+    decision = { error: "Couldn't reach the server." };
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Help me decide";
+  }
+  renderHome();
+}
+
+function renderDecision() {
+  const box = $("#decision");
+  if (!decision) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  box.classList.toggle("err", Boolean(decision.error));
+  const close = el("button", { class: "icon-btn small", "aria-label": "Dismiss suggestion", onclick: () => { decision = null; renderHome(); } }, "×");
+  if (decision.error) {
+    box.replaceChildren(el("div", { class: "decision-head" }, el("p", {}, decision.error), close));
+    return;
+  }
+  const route = routes[decision.choice];
+  const kids = [
+    el("div", { class: "decision-head" },
+      el("div", {},
+        el("p", { class: "decision-label" }, "AI suggestion"),
+        el("p", { class: "decision-headline" }, decision.headline || `Take ${route?.name}`),
+      ),
+      close,
+    ),
+    el("p", { class: "decision-reason" }, decision.reason),
+  ];
+  if (decision.weather?.areas?.length) {
+    kids.push(el("p", { class: "decision-weather" },
+      `Rain forecast${decision.weather.validFor ? ` (${decision.weather.validFor})` : ""}: `,
+      decision.weather.areas.map((a) => `${a.area} ${a.forecast}`).join(" · "),
+    ));
+  } else {
+    kids.push(el("p", { class: "decision-weather" }, "Weather forecast unavailable; based on timings only."));
+  }
+  const at = decision.decidedAt ? clock(new Date(decision.decidedAt)) : "";
+  kids.push(el("p", { class: "decision-meta" }, `${decision.model} at ${at}. Timings keep changing; tap again to re-check.`));
+  box.replaceChildren(...kids);
+}
+
+$("#decide").addEventListener("click", helpMeDecide);
 
 // ---------- Add / edit ----------
 let editingIdx = null;
@@ -259,6 +327,7 @@ $("#editor").addEventListener("submit", (e) => {
 });
 
 function saveRoutesWith(route) {
+  decision = null; // route list changed, old suggestion no longer applies
   const next = [...routes];
   if (editingIdx == null) next.push(route);
   else next[editingIdx] = route;
@@ -277,6 +346,7 @@ $("#delete-route").addEventListener("click", () => {
   if (editingIdx == null || !confirm("Delete this route?")) return;
   const next = routes.filter((_, i) => i !== editingIdx);
   if (saveRoutes(next)) routes = next;
+  decision = null;
   show("home");
   renderHome();
 });

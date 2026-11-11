@@ -37,10 +37,21 @@ async function tryModel(client, model) {
 }
 
 try {
-  const { client, baseURL, model, models } = await connect();
+  const { client, baseURL, model, decideModel, models } = await connect();
   console.log(`Endpoint:  ${baseURL}`);
   console.log(`Models:    ${models.join(", ")}`);
-  console.log(`App uses:  ${model}${process.env.OPENCODE_MODEL ? " (from OPENCODE_MODEL)" : ""}\n`);
+  console.log(`Setup:     ${model}${process.env.OPENCODE_MODEL ? " (from OPENCODE_MODEL)" : ""}`);
+  console.log(`Decisions: ${decideModel}${process.env.OPENCODE_DECIDE_MODEL ? " (from OPENCODE_DECIDE_MODEL)" : " (default)"}\n`);
+  try {
+    const res = await client.chat.completions.create(
+      { model: decideModel, messages: [{ role: "user", content: 'Reply with JSON only: {"choice": 1}' }] },
+      { headers: { "x-opencode-session": randomUUID() } },
+    );
+    const text = res.choices?.[0]?.message?.content || "";
+    console.log(`${decideModel} (decisions): ${/\{[\s\S]*"choice"[\s\S]*\}/.test(text) ? "OK" : `unexpected reply: ${text.slice(0, 80)}`}`);
+  } catch (err) {
+    console.log(`${decideModel} (decisions): FAILED ${err.status ?? ""} ${String(err.error?.message || err.message).slice(0, 200)}`);
+  }
   const targets = process.argv.includes("--all") ? models : [model];
   for (const m of targets) {
     try {
