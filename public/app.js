@@ -1,4 +1,4 @@
-import { planRoute, minutesFrom, clock, LOAD_LABEL, LOAD_TITLE } from "./timing.js";
+import { planRoute, minutesFrom, clock, LOAD_LABEL, LOAD_TITLE, CROWD_LABEL, isTrain, trainKey } from "./timing.js";
 
 const STORAGE_KEY = "kakiroute.routes.v1";
 const REFRESH_MS = 20_000;
@@ -36,26 +36,38 @@ function saveRoutes(routes) {
 let routes = loadRoutes();
 
 // ---------- Home: live timings ----------
-let arrivals = {};
+let arrivals = {}; // bus stop code -> arrivals
+let trains = {}; // trainKey(leg) -> scheduled departures + station crowd
+let status = null; // train disruptions + bus advisories (null without LTA data)
 let lastFetch = null;
 let refreshTimer = null;
+
+async function getJson(url) {
+  try {
+    const r = await fetch(url);
+    const body = await r.json();
+    return r.ok ? body : { error: body.error || "unavailable" };
+  } catch {
+    return { error: "offline" };
+  }
+}
 
 async function refresh() {
   if (routes.length === 0) return renderHome();
   $("#refresh").disabled = true;
-  const codes = [...new Set(routes.flatMap((r) => r.legs.map((l) => l.board.code)))];
-  const results = await Promise.all(
-    codes.map(async (code) => {
-      try {
-        const r = await fetch(`/api/arrivals/${code}`);
-        const body = await r.json();
-        return [code, r.ok ? body : { error: body.error || "unavailable" }];
-      } catch {
-        return [code, { error: "offline" }];
-      }
-    }),
-  );
-  arrivals = Object.fromEntries(results);
+  const legs = routes.flatMap((r) => r.legs);
+  const busCodes = [...new Set(legs.filter((l) => !isTrain(l)).map((l) => l.board.code))];
+  const trainLegs = [...new Map(legs.filter(isTrain).map((l) => [trainKey(l), l])).values()];
+  const trainUrl = (l) =>
+    `/api/train-leg?${new URLSearchParams({ from: l.board.code, to: l.alight.code, line: l.line, crowdLine: l.crowdLine || "" })}`;
+  const [busResults, trainResults, statusBody] = await Promise.all([
+    Promise.all(busCodes.map(async (code) => [code, await getJson(`/api/arrivals/${code}`)])),
+    Promise.all(trainLegs.map(async (l) => [trainKey(l), await getJson(trainUrl(l))])),
+    getJson("/api/status"),
+  ]);
+  arrivals = Object.fromEntries(busResults);
+  trains = Object.fromEntries(trainResults);
+  status = statusBody.error ? null : statusBody;
   lastFetch = new Date();
   $("#refresh").disabled = false;
   renderHome();
@@ -69,7 +81,19 @@ function renderHome() {
   $("#empty").hidden = routes.length > 0;
   $("#updated").textContent = lastFetch ? `Updated ${clock(lastFetch)}` : "";
   const now = new Date();
-  routes.forEach((route, idx) => list.append(routeCard(route, idx, planRoute(route, arrivals, now), now)));
+  routes.forEach((route, idx) => list.append(routeCard(route, idx, planRoute(route, arrivals, now, { trains, status }), now)));
+}
+
+// "11/11/2026 14:25-Bus services 5 and 23 are delayed…" -> "Bus services 5 and 23 are delayed…"
+const tidy = (text) => String(text || "").replace(/^\s*\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*-\s*/, "").replace(/^\d{4}hrs:\s*/i, "");
+
+function alertBanner(alert, leg) {
+  if (alert.kind === "disruption") {
+    const at = alert.atYourStations?.length ? ` (affects ${alert.atYourStations.join(", ")})` : "";
+    const bus = alert.freeBus && !/free/i.test(alert.text || "") ? " Free bus rides are available." : "";
+    return el("p", { class: "alert bad", role: "status" }, el("strong", {}, `${leg.line} disrupted${at}: `), tidy(alert.text), bus);
+  }
+  return el("p", { class: "alert warn", role: "status" }, el("strong", {}, `Bus ${leg.service}: `), tidy(alert.text));
 }
 
 function routeCard(route, idx, plan, now) {
@@ -97,7 +121,9 @@ function routeCard(route, idx, plan, now) {
     const leaveIn = minutesFrom(now, plan.leaveBy);
     card.append(
       el("p", { class: "headline" },
-        el("strong", {}, first.service), ` in ${minutesFrom(now, l0.bus)} min · `,
+        el("strong", {}, first.service), ` in ${minutesFrom(now, l0.bus)} min`,
+        isTrain(first) ? el("span", { class: "sched", title: "LTA timetable: LTA publishes no live train arrivals" }, " (timetable)") : null,
+        " · ",
         leaveIn <= 0 ? el("span", { class: "tag tight" }, "leave now") : `leave in ${leaveIn} min`,
       ),
     );
@@ -105,27 +131,45 @@ function routeCard(route, idx, plan, now) {
     card.append(el("p", { class: "headline" }, el("span", { class: "tag bad" }, problemText(l0, route.legs[0]))));
   }
 
+  const shown = new Set();
+  for (const a of plan.alerts || []) {
+    if (shown.has(a.text)) continue;
+    shown.add(a.text);
+    card.append(alertBanner(a, route.legs[a.leg]));
+  }
+
   const ol = el("ol", { class: "legs-list" });
   route.legs.forEach((leg, i) => {
     const p = plan.legs[i];
+    const train = isTrain(leg);
     const where = i === 0 ? `${leg.board.name || leg.board.code}` : `walk ${leg.walkBeforeMin} min → ${leg.board.name || leg.board.code}`;
+    const towards = train && (p?.towards || leg.towards) ? el("span", { class: "muted" }, ` (towards ${p?.towards || leg.towards})`) : null;
     let detail;
     if (!p) detail = el("span", { class: "muted" }, "—");
     else if (p.bus) {
+      const what = train ? "train" : "bus";
       const extra = i === 0
-        ? (p.missedEarlier ? ` (${p.missedEarlier} earlier bus${p.missedEarlier > 1 ? "es" : ""} too soon to catch)` : "")
+        ? (p.missedEarlier ? ` (${p.missedEarlier} earlier ${what}${p.missedEarlier > 1 ? (train ? "s" : "es") : ""} too soon to catch)` : "")
         : "";
       detail = [
-        `bus at ${clock(p.bus)}`,
-        p.live === false ? el("span", { class: "sched", title: "Operator's timetable estimate, not live GPS" }, " sched.") : null,
+        `${what} at ${clock(p.bus)}`,
+        train
+          ? el("span", { class: "sched", title: "LTA timetable: LTA publishes no live train arrivals" }, " timetable")
+          : p.live === false ? el("span", { class: "sched", title: "Operator's timetable estimate, not live GPS" }, " sched.") : null,
         i > 0 ? el("span", { class: `tag ${p.state === "tight" ? "tight" : "ok"}` }, ` · ${p.waitMin} min spare`) : extra,
         p.load ? el("span", { class: `load load-${p.load.toLowerCase()}`, title: LOAD_TITLE[p.load] }, LOAD_LABEL[p.load]) : null,
+        p.crowd
+          ? el("span", {
+              class: `load crowd-${p.crowd.level}`,
+              title: `${leg.board.name || leg.board.code} station crowd: ${p.crowd.level} (LTA ${p.crowd.source === "now" ? "real-time" : "forecast"})`,
+            }, CROWD_LABEL[p.crowd.level])
+          : null,
       ];
     } else detail = el("span", { class: "tag bad" }, problemText(p, leg));
     ol.append(
       el("li", {},
-        el("span", { class: "svc" }, leg.service),
-        el("div", {}, el("div", {}, where, ` → ${leg.alight.name || leg.alight.code}`), el("div", { class: "muted" }, detail)),
+        el("span", { class: `svc${train ? " train" : ""}` }, leg.service),
+        el("div", {}, el("div", {}, where, ` → ${leg.alight.name || leg.alight.code}`, towards), el("div", { class: "muted" }, detail)),
       ),
     );
   });
@@ -138,6 +182,14 @@ function routeCard(route, idx, plan, now) {
 }
 
 function problemText(p, leg) {
+  if (isTrain(leg)) {
+    switch (p?.state) {
+      case "unavailable": return "Train timetable unavailable (needs LTA data on the server)";
+      case "no-service": return `No scheduled ${leg.line} trains this way in the next 2 hours`;
+      case "beyond-data": return `No scheduled ${leg.line} train known after you reach the platform`;
+      default: return "No timing";
+    }
+  }
   switch (p?.state) {
     case "unavailable": return "Service unavailable: check this stop manually";
     case "no-service": return `No ${leg.service} reported at this stop right now`;
@@ -251,7 +303,14 @@ function addLegFieldset(leg) {
   const frag = $("#leg-template").content.cloneNode(true);
   const fs = frag.querySelector("fieldset");
   const f = (name) => fs.querySelector(`[name=${name}]`);
-  if (leg) {
+  if (leg && isTrain(leg)) {
+    f("mode").value = "train";
+    f("tFrom").value = leg.board.name || leg.board.code;
+    f("tTo").value = leg.alight.name || leg.alight.code;
+    f("tRide").value = leg.rideMin;
+    f("walkBeforeMin").value = leg.walkBeforeMin || 0;
+    setTrainOptions(fs, { board: leg.board.name || leg.board.code, alight: leg.alight.name || leg.alight.code, options: [optionFromLeg(leg)] });
+  } else if (leg) {
     f("service").value = leg.service;
     f("board").value = leg.board.code;
     f("alight").value = leg.alight.code;
@@ -263,18 +322,84 @@ function addLegFieldset(leg) {
   for (const name of ["board", "alight"]) {
     f(name).addEventListener("change", () => lookupStop(fs, name));
   }
+  f("mode").addEventListener("change", () => setMode(fs, f("mode").value));
+  for (const name of ["tFrom", "tTo"]) f(name).addEventListener("change", () => checkTrain(fs));
+  f("tOption").addEventListener("change", () => {
+    const o = selectedTrainOption(fs);
+    if (o) f("tRide").value = o.ride_min;
+  });
   fs.querySelector(".remove-leg").addEventListener("click", () => {
     fs.remove();
     relabelLegs();
   });
+  setMode(fs, f("mode").value);
   $("#legs").append(fs);
   relabelLegs();
+}
+
+// Show the bus or train inputs; hidden inputs are disabled so they don't block form validation.
+function setMode(fs, mode) {
+  for (const [sel, on] of [[".bus-fields", mode === "bus"], [".train-fields", mode === "train"]]) {
+    const group = fs.querySelector(sel);
+    group.hidden = !on;
+    for (const input of group.querySelectorAll("input, select")) input.disabled = !on;
+  }
+}
+
+// A saved train leg, shaped like one option from /api/trains/check.
+function optionFromLeg(leg) {
+  return {
+    line: leg.line,
+    line_name: leg.lineName || leg.line,
+    crowd_line: leg.crowdLine || null,
+    towards: leg.towards || null,
+    board_code: leg.board.code,
+    alight_code: leg.alight.code,
+    ride_min: leg.rideMin,
+  };
+}
+
+function setTrainOptions(fs, check) {
+  fs.trainCheck = check;
+  const options = check?.options || [];
+  fs.querySelector("[name=tOption]").replaceChildren(
+    ...options.map((o, i) => {
+      const stops = o.stops_travelled ? ` · ${o.stops_travelled} stop${o.stops_travelled > 1 ? "s" : ""}` : "";
+      return el("option", { value: String(i) }, `${o.line_name || o.line}${o.towards ? ` towards ${o.towards}` : ""}${stops} · ~${o.ride_min} min`);
+    }),
+  );
+  const o = options[0];
+  setTrainStatus(fs, o ? `${check.board} (${o.board_code}) → ${check.alight} (${o.alight_code})` : "");
+}
+
+function setTrainStatus(fs, text, bad = false) {
+  const n = fs.querySelector(".train-status");
+  n.textContent = text;
+  n.classList.toggle("bad", bad);
+}
+
+function selectedTrainOption(fs) {
+  return fs.trainCheck?.options?.[Number(fs.querySelector("[name=tOption]").value)] || null;
+}
+
+// Ask the server which lines run directly between the two stations typed in.
+async function checkTrain(fs) {
+  const from = fs.querySelector("[name=tFrom]").value.trim();
+  const to = fs.querySelector("[name=tTo]").value.trim();
+  setTrainOptions(fs, null);
+  if (!from || !to) return;
+  setTrainStatus(fs, "Checking the timetable…");
+  const body = await getJson(`/api/trains/check?${new URLSearchParams({ from, to })}`);
+  if (body.error) return setTrainStatus(fs, body.error, true);
+  setTrainOptions(fs, body);
+  const o = selectedTrainOption(fs);
+  if (o) fs.querySelector("[name=tRide]").value = o.ride_min;
 }
 
 function relabelLegs() {
   const sets = [...document.querySelectorAll("#legs .leg")];
   sets.forEach((fs, i) => {
-    fs.querySelector("legend").textContent = i === 0 ? "First bus" : `Transfer ${i}`;
+    fs.querySelector("legend").textContent = i === 0 ? "First leg" : `Transfer ${i}`;
     fs.querySelector(".walk-before").hidden = i === 0;
     fs.querySelector(".remove-leg").hidden = sets.length === 1;
   });
@@ -304,12 +429,29 @@ function readEditor() {
   const legs = [...document.querySelectorAll("#legs .leg")].map((fs, i) => {
     const v = (name) => fs.querySelector(`[name=${name}]`).value.trim();
     const name = (which) => fs.querySelector(`.stopname[data-for=${which}]`).dataset.name || "";
+    const walkBeforeMin = i === 0 ? 0 : Math.max(0, parseInt(v("walkBeforeMin"), 10) || 0);
+    if (v("mode") === "train") {
+      const o = selectedTrainOption(fs);
+      if (!o) return { invalid: "train" };
+      return {
+        mode: "train",
+        service: o.line,
+        line: o.line,
+        lineName: o.line_name || o.line,
+        crowdLine: o.crowd_line || null,
+        towards: o.towards || null,
+        board: { code: o.board_code, name: fs.trainCheck.board },
+        alight: { code: o.alight_code, name: fs.trainCheck.alight },
+        rideMin: Math.max(1, parseInt(v("tRide"), 10) || o.ride_min || 1),
+        walkBeforeMin,
+      };
+    }
     return {
       service: v("service").toUpperCase(),
       board: { code: v("board"), name: name("board") },
       alight: { code: v("alight"), name: name("alight") },
       rideMin: Math.max(1, parseInt(v("rideMin"), 10) || 1),
-      walkBeforeMin: i === 0 ? 0 : Math.max(0, parseInt(v("walkBeforeMin"), 10) || 0),
+      walkBeforeMin,
     };
   });
   return {
@@ -323,6 +465,7 @@ $("#editor").addEventListener("submit", (e) => {
   e.preventDefault();
   const route = readEditor();
   if (!route.name) return showEditorError("Give the route a name.");
+  if (route.legs.some((l) => l.invalid)) return showEditorError("For each train leg, enter both stations and pick a line and direction.");
   if (!saveRoutesWith(route)) return showEditorError("Couldn't save on this device (storage is blocked).");
   show("home");
   refresh();

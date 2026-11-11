@@ -114,6 +114,23 @@ h2 { font-size: 1.3rem; margin: 8px 0 16px; }
 .load-sda { color: var(--warn); }
 .load-lsd { color: var(--bad); }
 .sched { font-size: 0.78rem; color: var(--muted); font-style: italic; }
+/* Station crowd (LTA, per station) */
+.crowd-low { color: var(--ok); }
+.crowd-moderate { color: var(--warn); }
+.crowd-high { color: var(--bad); }
+/* Train legs: outlined line chip instead of the filled bus number */
+.svc.train { background: transparent; border: 2px solid currentColor; }
+/* Service alerts that affect this route */
+.alert { margin: 6px 0 8px; padding: 7px 10px; border-radius: 8px; font-size: 0.86rem; line-height: 1.35; border: 1px solid currentColor; }
+.alert.warn { color: var(--warn); }
+.alert.bad { color: var(--bad); }
+.card.disrupted { border-left-color: var(--bad); }
+/* Route editor: bus/train switch and train check status */
+.mode-row { display: flex; align-items: center; gap: 10px; margin: 4px 0 2px; }
+.mode-row .label { margin: 0; }
+.mode-select { width: auto; }
+.train-status { display: block; min-height: 1.2em; color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
+.train-status.bad { color: var(--bad); }
 .arrive { margin: 6px 0 0; font-size: 0.92rem; color: var(--muted); }
 
 /* AI suggestion */
@@ -145,12 +162,12 @@ h2 { font-size: 1.3rem; margin: 8px 0 16px; }
 .panel { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
 .label { display: block; font-size: 0.85rem; font-weight: 600; margin: 12px 0 4px; }
 .label:first-child { margin-top: 0; }
-input, textarea {
+input, textarea, select {
   font: inherit; width: 100%; padding: 10px 12px; border-radius: 10px;
   border: 1px solid var(--line); background: var(--bg); color: var(--text);
 }
 textarea { resize: vertical; }
-input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
 .row input { flex: 1; min-width: 0; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }

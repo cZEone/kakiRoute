@@ -6,6 +6,8 @@ import { RouteSetupAgent } from "./lib/agent.js";
 import { getArrivals } from "./lib/arrivals.js";
 import { defaultTransport } from "./lib/sgtransport.js";
 import { decide } from "./lib/decide.js";
+import { trainLegData, serviceStatus, checkTrainLeg, TrainsUnavailable, STATION_CODE, LINE_CODE } from "./lib/trains.js";
+import { sanitizeRoutes } from "./lib/routes.js";
 
 // Load settings such as OPENCODE_API_KEY from .env (git-ignored), if present.
 try {
@@ -38,7 +40,7 @@ getBusData().then(
 
 let agent = null;
 async function getAgent() {
-  if (!agent) agent = new RouteSetupAgent({ busData: await getBusData() });
+  if (!agent) agent = new RouteSetupAgent({ busData: await getBusData(), transport: defaultTransport() });
   return agent;
 }
 
@@ -71,24 +73,44 @@ app.post("/api/decide", async (req, res) => {
   }
 });
 
-function sanitizeRoutes(input) {
-  if (!Array.isArray(input) || input.length === 0 || input.length > 10) return null;
-  const code = (x) => (/^\d{5}$/.test(String(x?.code)) ? { code: String(x.code), name: String(x.name || "").slice(0, 80) } : null);
-  const num = (x, d) => (Number.isFinite(Number(x)) ? Math.max(0, Math.min(180, Number(x))) : d);
-  const out = [];
-  for (const r of input) {
-    const legs = (Array.isArray(r?.legs) ? r.legs : []).slice(0, 5).map((l) => ({
-      service: String(l?.service || "").slice(0, 5),
-      board: code(l?.board),
-      alight: code(l?.alight),
-      rideMin: num(l?.rideMin, 10),
-      walkBeforeMin: num(l?.walkBeforeMin, 0),
-    }));
-    if (legs.length === 0 || legs.some((l) => !l.service || !l.board || !l.alight)) return null;
-    out.push({ name: String(r.name || "Route").slice(0, 60), walkFromHomeMin: num(r.walkFromHomeMin, 3), legs });
-  }
-  return out;
+// --- Trains (LTA timetable), service status and station crowding, via the MCP server ---
+function trainsError(res, err) {
+  const status = err instanceof TrainsUnavailable ? 503 : 502;
+  res.status(status).json({ error: err.message });
 }
+
+app.get("/api/train-leg", async (req, res) => {
+  const { from, to, line, crowdLine } = req.query;
+  if (![from, to].every((c) => STATION_CODE.test(String(c))) || !LINE_CODE.test(String(line))) {
+    return res.status(400).json({ error: "Need from, to (station codes such as NS17) and line (such as NSL)." });
+  }
+  const leg = { line: String(line), crowdLine: LINE_CODE.test(String(crowdLine)) ? String(crowdLine) : null, board: { code: String(from) }, alight: { code: String(to) } };
+  try {
+    res.json(await trainLegData(leg));
+  } catch (err) {
+    trainsError(res, err);
+  }
+});
+
+app.get("/api/status", async (req, res) => {
+  try {
+    res.json(await serviceStatus());
+  } catch (err) {
+    trainsError(res, err);
+  }
+});
+
+// Route editor: which lines run directly between two stations (names or codes).
+app.get("/api/trains/check", async (req, res) => {
+  const from = String(req.query.from || "").trim().slice(0, 40);
+  const to = String(req.query.to || "").trim().slice(0, 40);
+  if (!from || !to) return res.status(400).json({ error: "Enter both stations." });
+  try {
+    res.json(await checkTrainLeg(from, to));
+  } catch (err) {
+    err instanceof TrainsUnavailable ? trainsError(res, err) : res.status(422).json({ error: err.message });
+  }
+});
 
 // --- Stop lookup (manual route entry) ---
 app.get("/api/stops/:code", async (req, res) => {
