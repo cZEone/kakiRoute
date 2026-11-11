@@ -56,35 +56,36 @@ test("planRoute reports unavailable and beyond-data", () => {
   assert.equal(arrivalTimes({ services: [] }, "901"), null);
 });
 
-// Scripted fake of client.beta.messages.create to exercise the agent loop.
+// Scripted fake of client.chat.completions.create to exercise the agent loop.
 function fakeClient(script) {
   const calls = [];
   return {
     calls,
-    beta: {
-      messages: {
+    chat: {
+      completions: {
         create: async (params) => {
           calls.push(structuredClone(params.messages));
-          const content = script.shift();
-          return { stop_reason: content.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn", content };
+          const message = script.shift();
+          return { choices: [{ message, finish_reason: message.tool_calls ? "tool_calls" : "stop" }] };
         },
       },
     },
   };
 }
-const tu = (id, name, input) => ({ type: "tool_use", id, name, input });
+const tc = (id, name, input) => ({ id, type: "function", function: { name, arguments: JSON.stringify(input) } });
+const turn = (...tool_calls) => ({ role: "assistant", content: null, tool_calls });
 
-test("agent: search -> ask -> propose, with held tool results", async () => {
+test("agent: search -> ask -> propose, every tool call answered", async () => {
   const client = fakeClient([
-    [tu("t1", "search_stops", { query: "Mock Blk 101", service: "901" })],
-    [tu("t2", "check_leg", { service: "901", board_code: "90011", alight_code: "90031" }), tu("t3", "ask_user", { question: "Which side?", options: ["A", "B"] })],
-    [tu("t4", "propose_route", {
+    turn(tc("t1", "search_stops", { query: "Mock Blk 101", service: "901" })),
+    turn(tc("t2", "check_leg", { service: "901", board_code: "90011", alight_code: "90031" }), tc("t3", "ask_user", { question: "Which side?", options: ["A", "B"] })),
+    turn(tc("t4", "propose_route", {
       name: "Work", walk_from_home_min: 4, notes: "Assumed 1 min walk.",
       legs: [
         { service: "901", board_code: "90011", alight_code: "90031", ride_min: 9, walk_before_min: 0 },
         { service: "905", board_code: "90032", alight_code: "90051", ride_min: 14, walk_before_min: 1 },
       ],
-    })],
+    })),
   ]);
   const agent = new RouteSetupAgent({ busData: bus, client });
   const q = await agent.start("901 from my block then 905 to the office");
@@ -92,22 +93,39 @@ test("agent: search -> ask -> propose, with held tool results", async () => {
   assert.deepEqual(q.options, ["A", "B"]);
 
   const p = await agent.reply(q.sessionId, "A");
-  // The answer message must carry results for BOTH t2 and t3.
-  const lastUser = client.calls[2].at(-1);
-  assert.deepEqual(lastUser.content.map((b) => b.tool_use_id).sort(), ["t2", "t3"]);
+  // After the answer, both t2 and t3 must have tool messages following the assistant turn.
+  const sent = client.calls[2];
+  assert.equal(sent[0].role, "system");
+  const toolIds = sent.filter((m) => m.role === "tool").map((m) => m.tool_call_id);
+  assert.deepEqual(toolIds.sort(), ["t1", "t2", "t3"]);
+  assert.match(sent.at(-1).content, /Commuter answered: A/);
   assert.equal(p.type, "proposal");
   assert.equal(p.route.legs[1].board.name, "Opp Mock Bt Int");
   assert.equal(p.route.walkFromHomeMin, 4);
 });
 
-test("agent: invalid proposal is sent back as a tool error", async () => {
+test("agent: invalid proposal and bad JSON are sent back as tool errors", async () => {
   const client = fakeClient([
-    [tu("t1", "propose_route", { name: "x", walk_from_home_min: 3, notes: "", legs: [{ service: "901", board_code: "90031", alight_code: "90011", ride_min: 5, walk_before_min: 0 }] })],
-    [{ type: "text", text: "Which stop do you board at?" }],
+    turn(
+      tc("t1", "propose_route", { name: "x", walk_from_home_min: 3, notes: "", legs: [{ service: "901", board_code: "90031", alight_code: "90011", ride_min: 5, walk_before_min: 0 }] }),
+      { id: "t2", type: "function", function: { name: "search_stops", arguments: "{oops" } },
+    ),
+    { role: "assistant", content: "Which stop do you board at?" },
   ]);
   const agent = new RouteSetupAgent({ busData: bus, client });
   const res = await agent.start("901 backwards");
   assert.equal(res.type, "question");
-  const toolResult = client.calls[1].at(-1).content[0];
-  assert.equal(toolResult.is_error, true);
+  const tools = client.calls[1].filter((m) => m.role === "tool");
+  assert.equal(tools.length, 2);
+  assert.ok(tools.every((m) => m.content.startsWith("Error:")));
+});
+
+test("agent: missing key gives a friendly message", async () => {
+  const saved = process.env.OPENCODE_API_KEY;
+  delete process.env.OPENCODE_API_KEY;
+  const agent = new RouteSetupAgent({ busData: bus });
+  const res = await agent.start("anything");
+  assert.equal(res.type, "error");
+  assert.match(res.message, /OPENCODE_API_KEY/);
+  if (saved) process.env.OPENCODE_API_KEY = saved;
 });

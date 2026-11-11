@@ -17,7 +17,7 @@ Instead of looking up 5-digit stop codes, you can describe a route in plain word
 
 > I take 961 from the stop outside Blk 123, get off at Bt Panjang Int, walk across the road and take 975 to work.
 
-An agent (Claude, via the Anthropic API) then:
+An agent (using your [OpenCode Go](https://opencode.ai/docs/go) subscription) then:
 
 1. searches the stop list (understands `Blk`, `Opp`, `Bt`, `Int`, `Stn`, …);
 2. checks which side of the road each service runs from, in your direction of travel;
@@ -40,11 +40,26 @@ Requires Node 20+.
 npm install
 ```
 
+Get your API key from the OpenCode console (you need an active Go subscription), then check the connection:
+
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... npm start
+OPENCODE_API_KEY=your-key npm run check-ai
 ```
 
-Then open http://localhost:3000. If `ANTHROPIC_API_KEY` isn't set, the app still works, but routes have to be entered manually.
+It prints the endpoint it found, the models your plan includes, the model it picked, and whether a test tool call worked. Then start the app:
+
+```bash
+OPENCODE_API_KEY=your-key npm start
+```
+
+Open http://localhost:3000. If `OPENCODE_API_KEY` isn't set, the app still works, but routes have to be entered manually.
+
+Optional settings:
+
+| Variable | Default |
+|---|---|
+| `OPENCODE_MODEL` | First available model matching Kimi, then GLM, DeepSeek, Qwen |
+| `OPENCODE_BASE_URL` | Auto-detected from `https://opencode.ai/zen/go/v1` and `https://opencode.ai/inference/go/openai/v1` |
 
 **Offline / mock mode.** `npm run mock` uses a small fake network (stops named "Mock …", codes `900xx`) and generated arrival times, so you can try the UI without network access.
 
@@ -59,7 +74,9 @@ npm test
 | Path | What it is |
 |---|---|
 | `server.js` | Express server: static files, arrivals proxy, stop lookup, setup-agent endpoints |
-| `lib/agent.js` | Route setup agent: tool definitions and tool-use loop, with pauses for questions and proposals |
+| `lib/agent.js` | Route setup agent: tool definitions and tool-calling loop, with pauses for questions and proposals |
+| `lib/llm.js` | OpenCode Go connection: endpoint detection and model choice |
+| `scripts/check-ai.js` | `npm run check-ai`: verifies your OpenCode Go key and model |
 | `lib/busdata.js` | Stop search, nearby stops, leg direction check, walk and ride estimates |
 | `lib/fixtures.js` | Mock network for `MOCK=1` and tests |
 | `public/timing.js` | Pure "which bus do I catch on each leg" calculation |
