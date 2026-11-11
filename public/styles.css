@@ -96,6 +96,28 @@ h2 { font-size: 1.3rem; margin: 8px 0 16px; }
 .tag.bad { color: var(--bad); }
 .arrive { margin: 6px 0 0; font-size: 0.92rem; color: var(--muted); }
 
+/* AI suggestion */
+.btn.decide { margin: 0 0 12px; background: var(--card); border: 1.5px solid var(--accent); color: var(--accent); }
+.decision {
+  background: var(--card); border: 1.5px solid var(--accent); border-radius: var(--radius);
+  padding: 12px 14px; margin: 0 0 12px;
+}
+.decision.err { border-color: var(--bad); color: var(--bad); }
+.decision-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.decision-head p { margin: 0; }
+.decision-label { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); }
+.decision-headline { font-size: 1.15rem; font-weight: 700; }
+.decision-reason { margin: 6px 0; }
+.decision-weather, .decision-meta { margin: 4px 0 0; font-size: 0.85rem; color: var(--muted); }
+.icon-btn.small { width: 32px; height: 32px; font-size: 1rem; flex: none; }
+.card { position: relative; }
+.card.suggested { outline: 2px solid var(--accent); outline-offset: 0; }
+.ai-badge {
+  position: absolute; top: -10px; right: 12px; font-size: 0.72rem; font-weight: 700;
+  background: var(--accent); color: var(--accent-ink); padding: 2px 8px; border-radius: 999px;
+}
+.ai-note { margin: 6px 0 0; font-size: 0.88rem; color: var(--accent); }
+
 .empty { text-align: center; padding: 32px 8px 8px; }
 .empty-title { font-size: 1.2rem; font-weight: 700; margin: 0 0 6px; }
 

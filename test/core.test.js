@@ -156,3 +156,38 @@ test("agent: retries without reasoning_content when the provider rejects it", as
   const assistant = calls[2].find((m) => m.role === "assistant");
   assert.equal(assistant.content, null);
 });
+
+test("decide: parses the model's JSON and passes timings + rain facts", async () => {
+  const { decide, parseDecision } = await import("../lib/decide.js");
+  assert.equal(parseDecision("```json\n{\"choice\": 3}\n```", 2), null);
+  assert.equal(parseDecision("{\"choice\": 2, \"headline\": \"h\", \"reason\": \"r\"}", 2).choice, 1);
+
+  let sent = null;
+  let headers = null;
+  const client = {
+    chat: {
+      completions: {
+        create: async (params, opts) => {
+          sent = params.messages;
+          headers = opts.headers;
+          return { choices: [{ message: { content: 'Sure: {"choice": 2, "headline": "Walk to Mock Blk 120", "reason": "Less walking under thundery showers.", "notes": [{"route": 1, "note": "Transfer walk in showers"}]}' } }] };
+        },
+      },
+    },
+  };
+  const routes = [
+    route,
+    { name: "Direct", walkFromHomeMin: 4, legs: [{ service: "902", board: { code: "90021", name: "Mock Blk 120" }, alight: { code: "90052", name: "Opp Mock Office Twr" }, rideMin: 25, walkBeforeMin: 0 }] },
+  ];
+  const res = await decide(routes, { mock: true, busData: bus, client, model: "gpt-6-luna" });
+  assert.equal(res.choice, 1);
+  assert.equal(res.notes[0], "Transfer walk in showers");
+  assert.equal(res.model, "gpt-6-luna");
+  assert.ok(res.weather.areas.some((a) => /Thundery/.test(a.forecast)));
+  const facts = sent[1].content;
+  assert.match(facts, /Route 1: "Work"/);
+  assert.match(facts, /Route 2: "Direct"/);
+  assert.match(facts, /Mock Central: Thundery Showers/);
+  assert.match(facts, /bus in \d+ min/);
+  assert.match(headers["x-opencode-session"], /^[0-9a-f-]{36}$/);
+});

@@ -3,7 +3,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { BusData } from "./lib/busdata.js";
 import { RouteSetupAgent } from "./lib/agent.js";
-import { mockArrivals } from "./lib/fixtures.js";
+import { getArrivals } from "./lib/arrivals.js";
+import { decide } from "./lib/decide.js";
 
 // Load settings such as OPENCODE_API_KEY from .env (git-ignored), if present.
 try {
@@ -12,8 +13,6 @@ try {
 
 const MOCK = process.env.MOCK === "1";
 const PORT = Number(process.env.PORT) || 3000;
-const ARRIVELAH = "https://arrivelah2.busrouter.sg/?id=";
-const ARRIVALS_CACHE_MS = 15_000;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -43,24 +42,52 @@ async function getAgent() {
 }
 
 // --- Live arrivals (arrivelah) ---
-const arrivalsCache = new Map();
 app.get("/api/arrivals/:code", async (req, res) => {
   const code = req.params.code;
   if (!/^\d{5}$/.test(code)) return res.status(400).json({ error: "Stop code must be 5 digits" });
-  if (MOCK) return res.json({ ...mockArrivals(code), fetchedAt: new Date().toISOString() });
-
-  const hit = arrivalsCache.get(code);
-  if (hit && Date.now() - hit.at < ARRIVALS_CACHE_MS) return res.json(hit.body);
   try {
-    const r = await fetch(ARRIVELAH + code, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const body = { ...(await r.json()), fetchedAt: new Date().toISOString() };
-    arrivalsCache.set(code, { at: Date.now(), body });
-    res.json(body);
+    res.json(await getArrivals(code, { mock: MOCK }));
   } catch (err) {
     res.status(502).json({ error: `Arrival timings unavailable (${err.message})` });
   }
 });
+
+// --- Help me decide: AI compares saved routes using timings + rain forecast ---
+app.post("/api/decide", async (req, res) => {
+  const routes = sanitizeRoutes(req.body?.routes);
+  if (!routes) return res.status(400).json({ error: "Invalid routes." });
+  let busData = null;
+  try {
+    busData = await getBusData();
+  } catch {
+    // Weather matching needs stop coordinates; decide on timings alone without them.
+  }
+  try {
+    const result = await decide(routes, { mock: MOCK, busData });
+    res.status(result.error ? 502 : 200).json(result);
+  } catch (err) {
+    res.status(500).json({ error: `Couldn't compare routes: ${err.message}` });
+  }
+});
+
+function sanitizeRoutes(input) {
+  if (!Array.isArray(input) || input.length === 0 || input.length > 10) return null;
+  const code = (x) => (/^\d{5}$/.test(String(x?.code)) ? { code: String(x.code), name: String(x.name || "").slice(0, 80) } : null);
+  const num = (x, d) => (Number.isFinite(Number(x)) ? Math.max(0, Math.min(180, Number(x))) : d);
+  const out = [];
+  for (const r of input) {
+    const legs = (Array.isArray(r?.legs) ? r.legs : []).slice(0, 5).map((l) => ({
+      service: String(l?.service || "").slice(0, 5),
+      board: code(l?.board),
+      alight: code(l?.alight),
+      rideMin: num(l?.rideMin, 10),
+      walkBeforeMin: num(l?.walkBeforeMin, 0),
+    }));
+    if (legs.length === 0 || legs.some((l) => !l.service || !l.board || !l.alight)) return null;
+    out.push({ name: String(r.name || "Route").slice(0, 60), walkFromHomeMin: num(r.walkFromHomeMin, 3), legs });
+  }
+  return out;
+}
 
 // --- Stop lookup (manual route entry) ---
 app.get("/api/stops/:code", async (req, res) => {

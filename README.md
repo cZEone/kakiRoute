@@ -27,9 +27,21 @@ An agent (using your [OpenCode Go](https://opencode.ai/docs/go) subscription) th
 
 The agent only sets up routes. The timings screen is plain arithmetic on live arrival data, with no AI involved. If AI setup is unavailable, you can still enter routes manually.
 
+## Help me decide (AI)
+
+With two or more saved routes, a **Help me decide** button appears above them. Tapping it:
+
+1. computes the latest timings for every route (the same arithmetic as the cards);
+2. matches each stop on each route to an area in the NEA 2-hour rain forecast (data.gov.sg);
+3. asks the decision model (`gpt-6-luna` by default) to weigh arrival time, transfer risk and where you'd walk in the rain;
+4. shows its pick with a one-line reason, marks that card "AI pick" and adds a short note to each card.
+
+It only runs when you tap the button, so the timings screen stays instant and the cards are unchanged without it. It only ever picks among your own saved routes.
+
 ## Data sources
 
 - Live arrivals: [arrivelah](https://github.com/cheeaun/arrivelah) (`https://arrivelah2.busrouter.sg/?id=<stop code>`), proxied by the server and cached for 15 seconds.
+- Rain forecast: NEA 2-hour forecast from [data.gov.sg](https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast), cached for 5 minutes. Set `DATA_GOV_SG_API_KEY` for higher rate limits.
 - Stops and service routes: [busrouter.sg](https://busrouter.sg) static data (`data.busrouter.sg/v1/stops.min.json`, `services.min.json`), used by the setup agent and the stop-name lookup.
 
 ## Running it
@@ -64,7 +76,9 @@ Optional settings:
 
 | Variable | Default |
 |---|---|
-| `OPENCODE_MODEL` | First available model matching Kimi, then GLM, DeepSeek, Qwen |
+| `OPENCODE_MODEL` | Route setup model: first available match for Kimi, then GLM, DeepSeek, Qwen |
+| `OPENCODE_DECIDE_MODEL` | "Help me decide" model: `gpt-6-luna` |
+| `DATA_GOV_SG_API_KEY` | None (the weather API works without a key, at lower rate limits) |
 | `OPENCODE_BASE_URL` | Auto-detected, trying `https://opencode.ai/inference/go/openai/v1` first, then `https://opencode.ai/zen/go/v1` |
 
 **Offline / mock mode.** `npm run mock` uses a small fake network (stops named "Mock …", codes `900xx`) and generated arrival times, so you can try the UI without network access.
@@ -82,6 +96,9 @@ npm test
 | `server.js` | Express server: static files, arrivals proxy, stop lookup, setup-agent endpoints |
 | `lib/agent.js` | Route setup agent: tool definitions and tool-calling loop, with pauses for questions and proposals |
 | `lib/llm.js` | OpenCode Go connection: endpoint detection and model choice |
+| `lib/decide.js` | "Help me decide": builds route facts (timings + rain) and asks the decision model |
+| `lib/weather.js` | NEA 2-hour forecast, matched to the nearest forecast area for each stop |
+| `lib/arrivals.js` | Cached arrivelah fetch, shared by the timings screen and decisions |
 | `scripts/check-ai.js` | `npm run check-ai`: verifies your OpenCode Go key and model |
 | `lib/busdata.js` | Stop search, nearby stops, leg direction check, walk and ride estimates |
 | `lib/fixtures.js` | Mock network for `MOCK=1` and tests |
@@ -91,5 +108,6 @@ npm test
 ## Known limits
 
 - Routes are saved in your browser only (no accounts or sync).
+- Rain exposure is judged from area forecasts, not from which walkways are covered.
 - arrivelah only returns the next few buses at each stop, so connections far in the future show as "next bus not known yet".
 - Ride times are estimates (distance along the route plus a small stop dwell time). Correct them in the editor if you know better.
