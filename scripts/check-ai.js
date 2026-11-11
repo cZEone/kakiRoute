@@ -2,6 +2,11 @@
 // models, and makes one small tool call. Run: OPENCODE_API_KEY=... npm run check-ai
 import { connect } from "../lib/llm.js";
 
+// Load settings such as OPENCODE_API_KEY from .env (git-ignored), if present.
+try {
+  process.loadEnvFile(new URL("../.env", import.meta.url));
+} catch {}
+
 try {
   const { client, baseURL, model, models } = await connect();
   console.log(`Endpoint:  ${baseURL}`);

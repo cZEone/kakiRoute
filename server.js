@@ -5,6 +5,11 @@ import { BusData } from "./lib/busdata.js";
 import { RouteSetupAgent } from "./lib/agent.js";
 import { mockArrivals } from "./lib/fixtures.js";
 
+// Load settings such as OPENCODE_API_KEY from .env (git-ignored), if present.
+try {
+  process.loadEnvFile(new URL("./.env", import.meta.url));
+} catch {}
+
 const MOCK = process.env.MOCK === "1";
 const PORT = Number(process.env.PORT) || 3000;
 const ARRIVELAH = "https://arrivelah2.busrouter.sg/?id=";

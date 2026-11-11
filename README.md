@@ -40,19 +40,25 @@ Requires Node 20+.
 npm install
 ```
 
-Get your API key from the OpenCode console (you need an active Go subscription), then check the connection:
+Get your API key from the OpenCode console (you need an active Go subscription). Copy `.env.example` to `.env` and put the key in it:
+
+```
+OPENCODE_API_KEY=your-key
+```
+
+`.env` is git-ignored, so the key never gets committed. Then check the connection:
 
 ```bash
-OPENCODE_API_KEY=your-key npm run check-ai
+npm run check-ai
 ```
 
 It prints the endpoint it found, the models your plan includes, the model it picked, and whether a test tool call worked. Then start the app:
 
 ```bash
-OPENCODE_API_KEY=your-key npm start
+npm start
 ```
 
-Open http://localhost:3000. If `OPENCODE_API_KEY` isn't set, the app still works, but routes have to be entered manually.
+Open http://localhost:3000. If there's no key, the app still works, but routes have to be entered manually.
 
 Optional settings:
 
