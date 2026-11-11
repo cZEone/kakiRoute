@@ -3,20 +3,37 @@
 
 const TIGHT_BUFFER_MIN = 2;
 
-// arrivelah response -> sorted list of arrival Date objects for one service.
-export function arrivalTimes(arrivalsBody, serviceNo) {
+// Bus crowding codes used by LTA (and arrivelah).
+export const LOAD_LABEL = { SEA: "Seats", SDA: "Standing", LSD: "Crowded" };
+export const LOAD_TITLE = { SEA: "Seats available", SDA: "Standing room available", LSD: "Limited standing room" };
+
+// arrivals response -> sorted, de-duplicated buses for one service:
+// [{ time: Date, load: "SEA"|"SDA"|"LSD"|null, live: true|false|null }]
+export function arrivalBuses(arrivalsBody, serviceNo) {
   const svc = (arrivalsBody?.services || []).find((s) => String(s.no).toUpperCase() === String(serviceNo).toUpperCase());
   if (!svc) return null; // service not reported at this stop right now
   const seen = new Set();
   const out = [];
   for (const key of ["next", "subsequent", "next2", "next3"]) {
-    const t = svc[key]?.time;
+    const b = svc[key];
+    const t = b?.time;
     if (!t || seen.has(t)) continue;
     seen.add(t);
     const d = new Date(t);
-    if (!Number.isNaN(d.getTime())) out.push(d);
+    if (Number.isNaN(d.getTime())) continue;
+    const m = b.monitored;
+    out.push({
+      time: d,
+      load: LOAD_LABEL[b.load] ? b.load : null,
+      live: m === 1 || m === "1" ? true : m === 0 || m === "0" ? false : null,
+    });
   }
-  return out.sort((a, b) => a - b);
+  return out.sort((a, b) => a.time - b.time);
+}
+
+// arrivals response -> sorted list of arrival Date objects for one service.
+export function arrivalTimes(arrivalsBody, serviceNo) {
+  return arrivalBuses(arrivalsBody, serviceNo)?.map((b) => b.time) ?? null;
 }
 
 // route: { walkFromHomeMin, legs: [{ service, board:{code}, alight:{code}, rideMin, walkBeforeMin }] }
@@ -37,22 +54,23 @@ export function planRoute(route, arrivalsByStop, now = new Date()) {
       status = "unavailable";
       break;
     }
-    const times = arrivalTimes(body, leg.service);
-    if (!times || times.length === 0) {
+    const buses = arrivalBuses(body, leg.service);
+    if (!buses || buses.length === 0) {
       legs.push({ ...leg, state: "no-service", atStop });
       status = worst(status, "no-service");
       break;
     }
-    const bus = times.find((d) => d >= atStop);
-    if (!bus) {
-      legs.push({ ...leg, state: "beyond-data", atStop, lastKnown: times[times.length - 1] });
+    const caught = buses.find((b) => b.time >= atStop);
+    if (!caught) {
+      legs.push({ ...leg, state: "beyond-data", atStop, lastKnown: buses[buses.length - 1].time });
       status = worst(status, "beyond-data");
       break;
     }
+    const bus = caught.time;
     const waitMin = Math.round((bus - atStop) / 60000);
     const tight = i > 0 && waitMin < TIGHT_BUFFER_MIN;
-    const missedEarlier = times.filter((d) => d < atStop).length; // buses that leave before you get there
-    legs.push({ ...leg, state: tight ? "tight" : "ok", atStop, bus, waitMin, missedEarlier });
+    const missedEarlier = buses.filter((b) => b.time < atStop).length; // buses that leave before you get there
+    legs.push({ ...leg, state: tight ? "tight" : "ok", atStop, bus, waitMin, missedEarlier, load: caught.load, live: caught.live });
     if (tight) status = worst(status, "tight");
     t = addMin(bus, leg.rideMin || 0);
   }

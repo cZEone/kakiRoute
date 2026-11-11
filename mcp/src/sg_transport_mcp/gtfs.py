@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+import statistics
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -114,37 +115,127 @@ class GTFSSchedule:
 
     # ---- departures ----------------------------------------------------------------------
 
-    def departures(self, stop_ids: set[str], now: datetime, window_minutes: int = 60, limit: int = 10) -> list[Departure]:
-        """Scheduled departures from the given stops between now and now+window (SGT)."""
+    def line_code(self, route_id: str) -> str:
+        """LTA route ids are per service pattern ('NSL_NS1_NS28'); the line is the prefix."""
+        return route_id.split("_", 1)[0]
+
+    def line_matches(self, route_id: str, line: str) -> bool:
+        want = line.strip().upper()
+        short = self.routes.get(route_id, {}).get("route_short_name", "").upper()
+        return want in (self.line_code(route_id).upper(), short)
+
+    def leg_options(self, board_ids: set[str], alight_ids: set[str], day: date) -> list[dict[str, Any]]:
+        """Every line that runs from a board stop to a later alight stop, from trips scheduled on `day`.
+
+        Grouped by (line, direction): scheduled ride minutes (median), stops travelled, headsign and
+        the platform stop codes used, so callers can show "NSL towards Marina South Pier, 6 stops, 9 min".
+        """
+        services = self.active_services(day)
+        calls: dict[str, list[tuple[int, int, str, bool]]] = {}  # trip -> (seq, secs, stop_id, is_board)
+        for row in self._read("stop_times.txt"):
+            stop_id = row.get("stop_id")
+            in_board, in_alight = stop_id in board_ids, stop_id in alight_ids
+            if not (in_board or in_alight):
+                continue
+            trip_id = row.get("trip_id", "")
+            trip = self.trips.get(trip_id)
+            if not trip or trip.get("service_id") not in services:
+                continue
+            dep = parse_gtfs_time(row.get("departure_time") or row.get("arrival_time") or "")
+            arr = parse_gtfs_time(row.get("arrival_time") or row.get("departure_time") or "")
+            if dep is None or arr is None:
+                continue
+            seq = _seq(row)
+            if in_board:
+                calls.setdefault(trip_id, []).append((seq, dep, stop_id, True))
+            if in_alight:
+                calls.setdefault(trip_id, []).append((seq, arr, stop_id, False))
+
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for trip_id, events in calls.items():
+            events.sort()
+            boards = [e for e in events if e[3]]
+            for b in boards:
+                a = next((e for e in events if not e[3] and e[0] > b[0]), None)
+                if a is None:
+                    continue
+                trip = self.trips[trip_id]
+                key = (self.line_code(trip.get("route_id", "")), trip.get("direction_id", ""))
+                g = groups.setdefault(key, {"rides": [], "stops": [], "headsigns": {}, "board": {}, "alight": {}, "route_id": trip.get("route_id", "")})
+                g["rides"].append((a[1] - b[1]) / 60)
+                g["stops"].append(a[0] - b[0])
+                for bucket, value in (("headsigns", trip.get("trip_headsign", "")), ("board", b[2]), ("alight", a[2])):
+                    g[bucket][value] = g[bucket].get(value, 0) + 1
+                break  # one boarding per trip (loop lines can pass a stop twice)
+
+        options = []
+        for (line, direction), g in groups.items():
+            top = lambda d: max(d, key=d.get)  # noqa: E731 - most common value
+            options.append(
+                {
+                    "line": line,
+                    "route_id": g["route_id"],
+                    "direction_id": direction or None,
+                    "towards": top(g["headsigns"]) or None,
+                    "board_stop_id": top(g["board"]),
+                    "alight_stop_id": top(g["alight"]),
+                    "ride_min": round(statistics.median(g["rides"])),
+                    "stops_travelled": round(statistics.median(g["stops"])),
+                    "trips_on_day": len(g["rides"]),
+                }
+            )
+        options.sort(key=lambda o: -o["trips_on_day"])
+        return options
+
+    def departures(
+        self,
+        stop_ids: set[str],
+        now: datetime,
+        window_minutes: int = 60,
+        limit: int = 10,
+        *,
+        to_stop_ids: set[str] | None = None,
+        line: str | None = None,
+    ) -> list[Departure]:
+        """Scheduled departures from the given stops between now and now+window (SGT).
+
+        to_stop_ids: only trains that later call at one of these stops (i.e. heading your way).
+        line: only trains on this line (route_id prefix such as 'NSL', or route short name such as 'NS').
+        """
         now = now.astimezone(SGT)
         horizon = now + timedelta(minutes=window_minutes)
         freq_trips = set(self.frequencies)
         at_stop: list[tuple[str, int, str, int]] = []  # (trip_id, departure secs, stop_id, stop_sequence)
         first_time: dict[str, int] = {}  # first departure of each frequency-based trip template
         last_seq: dict[str, int] = {}  # final stop of each trip, so terminating trains aren't "departures"
+        alight_seqs: dict[str, list[int]] = {}  # where each trip calls at a to_stop
         for row in self._read("stop_times.txt"):
             trip_id = row.get("trip_id", "")
             t = parse_gtfs_time(row.get("departure_time") or row.get("arrival_time") or "")
             if t is None:
                 continue
-            try:
-                seq = int(row.get("stop_sequence") or 0)
-            except ValueError:
-                seq = 0
+            seq = _seq(row)
             if seq > last_seq.get(trip_id, -1):
                 last_seq[trip_id] = seq
             if trip_id in freq_trips and (trip_id not in first_time or t < first_time[trip_id]):
                 first_time[trip_id] = t
-            if row.get("stop_id") in stop_ids:
-                at_stop.append((trip_id, t, row["stop_id"], seq))
+            stop_id = row.get("stop_id")
+            if stop_id in stop_ids:
+                at_stop.append((trip_id, t, stop_id, seq))
+            if to_stop_ids and stop_id in to_stop_ids:
+                alight_seqs.setdefault(trip_id, []).append(seq)
         at_stop = [(trip, t, stop, seq) for trip, t, stop, seq in at_stop if seq < last_seq.get(trip, seq + 1)]
+        if to_stop_ids:
+            at_stop = [e for e in at_stop if any(s > e[3] for s in alight_seqs.get(e[0], ()))]
+        if line:
+            at_stop = [e for e in at_stop if self.line_matches(self.trips.get(e[0], {}).get("route_id", ""), line)]
 
         out: list[Departure] = []
         today = now.date()
         for day in (today - timedelta(days=1), today):  # yesterday's service day can run past midnight
             services = self.active_services(day)
             midnight = datetime(day.year, day.month, day.day, tzinfo=SGT)
-            for trip_id, t, stop_id, _seq in at_stop:
+            for trip_id, t, stop_id, _ in at_stop:
                 trip = self.trips.get(trip_id)
                 if not trip or trip.get("service_id") not in services:
                     continue
@@ -168,6 +259,13 @@ class GTFSSchedule:
                         out.append(_dep(when, stop_id, trip_id, trip))
         out.sort(key=lambda d: d.when)
         return out[:limit]
+
+
+def _seq(row: dict[str, str]) -> int:
+    try:
+        return int(row.get("stop_sequence") or 0)
+    except ValueError:
+        return 0
 
 
 def _dep(when: datetime, stop_id: str, trip_id: str, trip: dict[str, str]) -> Departure:

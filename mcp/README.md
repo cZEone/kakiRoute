@@ -5,7 +5,7 @@ An MCP server for live Singapore transport, traffic and weather data. It wraps t
 - **[LTA DataMall](https://datamall.lta.gov.sg)**: buses (all operators: SBS Transit, SMRT, Tower Transit, Go-Ahead), trains, station crowding and traffic. Built against the [API User Guide v6.11 (30 Oct 2026)](https://datamall.lta.gov.sg/content/dam/datamall/datasets/LTA_DataMall_API_User_Guide.pdf).
 - **[data.gov.sg](https://data.gov.sg/collections/1456/view)**: NEA / Meteorological Service Singapore weather forecasts and readings.
 
-## Tools (21, all read-only)
+## Tools (22, all read-only)
 
 | Area | Tool | What it returns |
 |---|---|---|
@@ -13,10 +13,11 @@ An MCP server for live Singapore transport, traffic and weather data. It wraps t
 | Bus | `get_bus_arrivals` | Next 3 buses per service: ETA, live or scheduled, load (seats/standing), deck type, wheelchair access |
 | Bus | `get_bus_service` | Operator, category, start/end stops, peak and off-peak frequency |
 | Bus | `get_bus_route` | Ordered stops with first and last bus times (weekday, Saturday, Sunday) |
-| Train | `get_train_service_alerts` | Line status, affected stations, free bus/shuttle arrangements, LTA advisories |
+| Train | `get_train_service_alerts` | Line status, affected stations, free bus/shuttle arrangements, LTA advisories, and `bus_advisories`: bus services LTA reports as delayed or diverted |
 | Train | `get_train_disruption_feed` | GTFS-Realtime alerts and trip updates (delays, cancellations, skipped stops) during disruptions |
 | Train | `find_train_station` | Station and platform lookup from LTA's GTFS train schedule |
-| Train | `get_scheduled_train_departures` | **Timetable** departures from a station (see the limitations section) |
+| Train | `get_scheduled_train_departures` | **Timetable** departures from a station, optionally only trains going on to `to_station` and/or on one `line` (see the limitations section) |
+| Train | `check_train_leg` | Whether a line runs directly between two stations: direction, stops, scheduled ride minutes, and station codes for the crowd tools |
 | Crowd | `get_station_crowd` | Real-time crowd level per station (low/moderate/high), updated every 10 min |
 | Crowd | `get_station_crowd_forecast` | 30-minute crowd forecast per station |
 | Traffic | `get_traffic_incidents` | Accidents, breakdowns, roadworks, diversions |

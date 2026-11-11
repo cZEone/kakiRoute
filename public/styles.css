@@ -98,6 +98,22 @@ h2 { font-size: 1.3rem; margin: 8px 0 16px; }
 .tag.ok { color: var(--ok); }
 .tag.tight { color: var(--warn); }
 .tag.bad { color: var(--bad); }
+/* Bus crowding (LTA load) and schedule-only marker */
+.load {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 7px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.5;
+  vertical-align: 1px;
+}
+.load-sea { color: var(--ok); }
+.load-sda { color: var(--warn); }
+.load-lsd { color: var(--bad); }
+.sched { font-size: 0.78rem; color: var(--muted); font-style: italic; }
 .arrive { margin: 6px 0 0; font-size: 0.92rem; color: var(--muted); }
 
 /* AI suggestion */

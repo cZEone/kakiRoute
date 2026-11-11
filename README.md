@@ -5,7 +5,7 @@ Helps a commuter standing in the lift decide which bus stop to walk to, for rout
 Save your own routes once (including transfers that need a short walk between stops). Then open the app and see, for each route:
 
 - which stop to walk to, and when to leave;
-- the bus you'd actually catch on each leg, if you leave now;
+- the bus you'd actually catch on each leg, if you leave now, and how full it is (**Seats** / **Standing** / **Crowded**);
 - how many minutes you'd have spare at each transfer (amber when it's under 2 minutes);
 - roughly when you'd arrive.
 
@@ -33,14 +33,14 @@ With two or more saved routes, a **Help me decide** button appears above them. T
 
 1. computes the latest timings for every route (the same arithmetic as the cards);
 2. matches each stop on each route to an area in the NEA 2-hour rain forecast (data.gov.sg);
-3. asks the decision model (`gpt-6-luna` by default) to weigh arrival time, transfer risk and where you'd walk in the rain;
+3. asks the decision model (`gpt-6-luna` by default) to weigh arrival time, transfer risk, how crowded each bus is, and where you'd walk in the rain;
 4. shows its pick with a one-line reason, marks that card "AI pick" and adds a short note to each card.
 
 It only runs when you tap the button, so the timings screen stays instant and the cards are unchanged without it. It only ever picks among your own saved routes.
 
 ## Data sources
 
-- Live arrivals: [arrivelah](https://github.com/cheeaun/arrivelah) (`https://arrivelah2.busrouter.sg/?id=<stop code>`), proxied by the server and cached for 15 seconds.
+- Live arrivals: official [LTA DataMall](https://datamall.lta.gov.sg) bus arrivals through the sg-transport MCP server in [`mcp/`](mcp/README.md), when `LTA_ACCOUNT_KEY` is set. Each bus comes with its crowding (LTA's load: seats, standing, limited standing) and whether its time is live GPS or the operator's schedule, shown as *sched.* on the card. Without a key, or if the MCP server can't start, arrivals come from [arrivelah](https://github.com/cheeaun/arrivelah) (`https://arrivelah2.busrouter.sg/?id=<stop code>`). Either way the server caches them for 15 seconds.
 - Rain forecast: NEA 2-hour forecast from [data.gov.sg](https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast), cached for 5 minutes. Set `DATA_GOV_SG_API_KEY` for higher rate limits.
 - Stops and service routes: [busrouter.sg](https://busrouter.sg) static data (`data.busrouter.sg/v1/stops.min.json`, `services.min.json`), used by the setup agent and the stop-name lookup.
 
@@ -64,7 +64,25 @@ OPENCODE_API_KEY=your-key
 npm run check-ai
 ```
 
-It prints the endpoint it found, the models your plan includes, the model it picked, and whether a two-step tool-calling exchange worked. To test every model on your plan, run `npm run check-ai -- --all`. Then start the app:
+It prints the endpoint it found, the models your plan includes, the model it picked, and whether a two-step tool-calling exchange worked. To test every model on your plan, run `npm run check-ai -- --all`.
+
+**Official LTA data (recommended).** Request a free [LTA DataMall AccountKey](https://datamall.lta.gov.sg/content/datamall/en/request-for-api.html) and add it to `.env`:
+
+```
+LTA_ACCOUNT_KEY=your-key
+```
+
+The app starts the sg-transport MCP server in `mcp/` as a child process, which needs [uv](https://docs.astral.sh/uv/). Install its Python dependencies once, then check it end to end:
+
+```bash
+npm run mcp:setup
+```
+
+```bash
+npm run check-mcp
+```
+
+`check-mcp` starts the server, prints live arrivals with crowding for a stop (default `44009`, or pass one: `npm run check-mcp -- 83139`), and lists any bus services LTA reports as delayed or diverted. Then start the app:
 
 ```bash
 npm start
@@ -78,6 +96,9 @@ Optional settings:
 |---|---|
 | `OPENCODE_MODEL` | Route setup model: first available match for Kimi, then GLM, DeepSeek, Qwen |
 | `OPENCODE_DECIDE_MODEL` | "Help me decide" model: `gpt-6-luna` |
+| `LTA_ACCOUNT_KEY` | None: arrivals come from arrivelah |
+| `SG_TRANSPORT` | Set to `off` to skip the MCP server even when `LTA_ACCOUNT_KEY` is set |
+| `SG_TRANSPORT_DEBUG` | Set to `1` to show the MCP server's own log output |
 | `DATA_GOV_SG_API_KEY` | None (the weather API works without a key, at lower rate limits) |
 | `OPENCODE_BASE_URL` | Auto-detected, trying `https://opencode.ai/inference/go/openai/v1` first, then `https://opencode.ai/zen/go/v1` |
 
@@ -98,8 +119,11 @@ npm test
 | `lib/llm.js` | OpenCode Go connection: endpoint detection and model choice |
 | `lib/decide.js` | "Help me decide": builds route facts (timings + rain) and asks the decision model |
 | `lib/weather.js` | NEA 2-hour forecast, matched to the nearest forecast area for each stop |
-| `lib/arrivals.js` | Cached arrivelah fetch, shared by the timings screen and decisions |
+| `lib/arrivals.js` | Cached bus arrivals (LTA via MCP, else arrivelah) in one shape, shared by the timings screen and decisions |
+| `lib/sgtransport.js` | MCP client: runs the sg-transport server in `mcp/` as a child process and calls its tools |
+| `mcp/` | sg-transport MCP server (Python): LTA DataMall and NEA data for buses, trains, crowding, traffic and weather |
 | `scripts/check-ai.js` | `npm run check-ai`: verifies your OpenCode Go key and model |
+| `scripts/check-mcp.js` | `npm run check-mcp`: verifies your LTA key and the MCP server with live data |
 | `lib/busdata.js` | Stop search, nearby stops, leg direction check, walk and ride estimates |
 | `lib/fixtures.js` | Mock network for `MOCK=1` and tests |
 | `public/timing.js` | Pure "which bus do I catch on each leg" calculation |
@@ -111,5 +135,6 @@ npm test
 
 - Routes are saved in your browser only (no accounts or sync).
 - Rain exposure is judged from area forecasts, not from which walkways are covered.
-- arrivelah only returns the next few buses at each stop, so connections far in the future show as "next bus not known yet".
+- LTA (and arrivelah) only return the next three buses at each stop, so connections far in the future show as "next bus not known yet".
+- Some bus times are the operator's schedule rather than live GPS (marked *sched.*); they can be less accurate.
 - Ride times are estimates (distance along the route plus a small stop dwell time). Correct them in the editor if you know better.

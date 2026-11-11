@@ -1,4 +1,4 @@
-import { planRoute, minutesFrom, clock } from "./timing.js";
+import { planRoute, minutesFrom, clock, LOAD_LABEL, LOAD_TITLE } from "./timing.js";
 
 const STORAGE_KEY = "kakiroute.routes.v1";
 const REFRESH_MS = 20_000;
@@ -117,7 +117,9 @@ function routeCard(route, idx, plan, now) {
         : "";
       detail = [
         `bus at ${clock(p.bus)}`,
+        p.live === false ? el("span", { class: "sched", title: "Operator's timetable estimate, not live GPS" }, " sched.") : null,
         i > 0 ? el("span", { class: `tag ${p.state === "tight" ? "tight" : "ok"}` }, ` · ${p.waitMin} min spare`) : extra,
+        p.load ? el("span", { class: `load load-${p.load.toLowerCase()}`, title: LOAD_TITLE[p.load] }, LOAD_LABEL[p.load]) : null,
       ];
     } else detail = el("span", { class: "tag bad" }, problemText(p, leg));
     ol.append(

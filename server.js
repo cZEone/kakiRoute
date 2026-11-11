@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { BusData } from "./lib/busdata.js";
 import { RouteSetupAgent } from "./lib/agent.js";
 import { getArrivals } from "./lib/arrivals.js";
+import { defaultTransport } from "./lib/sgtransport.js";
 import { decide } from "./lib/decide.js";
 
 // Load settings such as OPENCODE_API_KEY from .env (git-ignored), if present.
@@ -120,5 +121,20 @@ app.post("/api/setup/reply", async (req, res) => {
     res.status(503).json({ type: "error", message: `Route setup unavailable: ${err.message}` });
   }
 });
+
+// --- Official LTA data via the sg-transport MCP server (./mcp), if configured ---
+const sgTransport = defaultTransport();
+if (sgTransport) {
+  sgTransport.warm(); // the Python server takes a couple of seconds to start
+  console.log("Bus arrivals: LTA DataMall via the sg-transport MCP server (arrivelah as fallback)");
+} else if (!MOCK) {
+  console.log("Bus arrivals: arrivelah (set LTA_ACCOUNT_KEY in .env for official LTA data with bus crowding)");
+}
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.once(signal, async () => {
+    await sgTransport?.close().catch(() => {});
+    process.exit(0);
+  });
+}
 
 app.listen(PORT, () => console.log(`kakiRoute on http://localhost:${PORT}${MOCK ? " (MOCK data)" : ""}`));
