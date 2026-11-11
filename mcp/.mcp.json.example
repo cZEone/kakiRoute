@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "sg-transport": {
+      "command": "uv",
+      "args": ["--directory", "/absolute/path/to/kakiRoute/mcp", "run", "sg-transport-mcp"],
+      "env": {
+        "LTA_ACCOUNT_KEY": "${LTA_ACCOUNT_KEY:-}",
+        "DATA_GOV_SG_API_KEY": "${DATA_GOV_SG_API_KEY:-}"
+      }
+    }
+  }
+}
