@@ -4,8 +4,9 @@
   --text: #16191d;
   --muted: #5d646d;
   --line: #e2e2dc;
-  --accent: #0f766e;
+  --accent: #1e8a44;
   --accent-ink: #ffffff;
+  --brand-kaki: #5a2d82;
   --ok: #15803d;
   --warn: #b45309;
   --bad: #b91c1c;
@@ -19,8 +20,9 @@
     --text: #eef0f1;
     --muted: #9aa3ab;
     --line: #2c3236;
-    --accent: #2dd4bf;
-    --accent-ink: #062320;
+    --accent: #3dba67;
+    --accent-ink: #06200f;
+    --brand-kaki: #b993e6;
     --ok: #4ade80;
     --warn: #fbbf24;
     --bad: #f87171;
@@ -47,8 +49,10 @@ h2 { font-size: 1.3rem; margin: 8px 0 16px; }
   max-width: 560px; margin: 0 auto; padding: 12px 16px;
   background: var(--bg);
 }
-.brand { font-size: 1.25rem; margin: 0; letter-spacing: -0.02em; }
-.brand span { color: var(--accent); }
+.brand { display: flex; align-items: center; gap: 8px; font-size: 1.25rem; margin: 0; letter-spacing: -0.02em; }
+.brand img { flex: none; }
+.brand .k { color: var(--brand-kaki); }
+.brand .r { color: var(--accent); }
 .topbar-right { display: flex; align-items: center; gap: 8px; font-size: 0.85rem; }
 
 .btn {

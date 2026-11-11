@@ -9,7 +9,7 @@ Save your own routes once (including transfers that need a short walk between st
 - how many minutes you'd have spare at each transfer (amber when it's under 2 minutes);
 - roughly when you'd arrive.
 
-Routes stay in the order you saved them. The app doesn't rank or recommend routes; you choose.
+Routes stay in the order you saved them, and you choose. If you want a second opinion, **Help me decide** (below) picks one of your saved routes.
 
 ## AI route setup
 
@@ -104,6 +104,8 @@ npm test
 | `lib/fixtures.js` | Mock network for `MOCK=1` and tests |
 | `public/timing.js` | Pure "which bus do I catch on each leg" calculation |
 | `public/app.js` | UI: home timings, route editor, AI setup chat. Routes are stored in `localStorage` |
+| `public/about.html` | Landing page, served at `/about` |
+| `public/icon.svg` | Logo. PNG app icons and `manifest.webmanifest` sit beside it |
 
 ## Known limits
 

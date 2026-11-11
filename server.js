@@ -17,7 +17,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(express.json({ limit: "32kb" }));
-app.use(express.static(join(__dirname, "public")));
+app.use(express.static(join(__dirname, "public"), { extensions: ["html"] }));
 
 // --- Bus stop / service data (loaded lazily so the timings screen works even if it fails) ---
 let busDataPromise = null;
