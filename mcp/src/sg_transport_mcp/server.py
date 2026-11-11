@@ -58,6 +58,9 @@ Typical chains:
 - "When is my bus?": find_bus_stops (by name or lat/lon) -> get_bus_arrivals(bus_stop_code).
 - "Which stops does bus 190 call at?": get_bus_route(service_no).
 - "Is the MRT OK?": get_train_service_alerts, then get_train_disruption_feed during a disruption.
+  Its bus_advisories also list bus services LTA reports as delayed or diverted.
+- "Train from Bishan to Dhoby Ghaut?": check_train_leg, then
+  get_scheduled_train_departures(station="Bishan", to_station="Dhoby Ghaut").
 - "How crowded is Raffles Place?": get_station_crowd(train_line="EWL", station="EW14").
 - "Weather near me": get_weather_forecast_2h(latitude, longitude) and get_current_weather.
 
@@ -332,12 +335,51 @@ def format_train_alerts(raw: dict[str, Any]) -> dict[str, Any]:
     label = {1: "normal service or minor delays", 2: "disrupted service or major delays"}.get(
         int(status) if str(status).isdigit() else -1, "unknown"
     )
-    return {"status": label, "status_code": status, "affected_segments": segments, "messages": messages}
+    return {
+        "status": label,
+        "status_code": status,
+        "affected_segments": segments,
+        "messages": messages,
+        "bus_advisories": parse_bus_advisories(messages),
+    }
+
+
+# "Bus services 5, 23, 59, 518 and 966 are delayed by up to 25 minutes due to ..."
+# "Bus service 961 has been diverted ..."
+_BUS_LIST = re.compile(r"\bbus services?\s+(.+?)\s+(?:is|are|has|have|will|was|were)\b", re.IGNORECASE)
+_SERVICE_NO = re.compile(r"\b\d{1,3}[A-Z]?\b")
+_DELAY_MIN = re.compile(r"delayed by up to (\d+)\s*min", re.IGNORECASE)
+
+
+def parse_bus_advisories(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pull the bus service numbers out of LTA's travel advisories, so apps can match them to a route."""
+    out = []
+    for m in messages:
+        text = m.get("content") or ""
+        found = _BUS_LIST.search(text)
+        if not found:
+            continue
+        services_ = list(dict.fromkeys(_SERVICE_NO.findall(found.group(1).upper())))
+        if not services_:
+            continue
+        lower = text.lower()
+        kind = "delay" if "delay" in lower else "diversion" if "divert" in lower else "advisory"
+        delay = _DELAY_MIN.search(text)
+        out.append(
+            {
+                "services": services_,
+                "kind": kind,
+                "delay_up_to_min": int(delay.group(1)) if delay else None,
+                "message": text,
+                "created": m.get("created"),
+            }
+        )
+    return out
 
 
 @mcp.tool(annotations=READ_ONLY)
 async def get_train_service_alerts() -> dict[str, Any]:
-    """Current MRT/LRT service status across all lines: disruptions, affected stations, free bus / shuttle arrangements and LTA advisories."""
+    """Current MRT/LRT service status across all lines: disruptions, affected stations, free bus / shuttle arrangements and LTA advisories. bus_advisories lists bus services LTA reports as delayed or diverted."""
     raw = await services().lta.get("TrainServiceAlerts", ttl=30)
     return format_train_alerts(raw)
 
@@ -392,35 +434,96 @@ async def find_train_station(
     return {"stations": out}
 
 
-@mcp.tool(annotations=READ_ONLY)
-async def get_scheduled_train_departures(
-    station: Annotated[str, Field(description="Station name or code, e.g. 'Bishan' or 'NS17'")],
-    window_minutes: Annotated[int, Field(ge=5, le=240)] = 30,
-    limit: Annotated[int, Field(ge=1, le=50)] = 12,
-) -> dict[str, Any]:
-    """SCHEDULED (timetable, not live) MRT/LRT departures from a station, from LTA's GTFS train schedule. LTA does not publish real-time next-train times; check get_train_service_alerts for disruptions."""
-    svc = services()
-    sched = await svc.train_schedule()
+def _station_stop_ids(sched: gtfs.GTFSSchedule, station: str) -> tuple[list[dict[str, str]], set[str]]:
     hits = sched.find_stations(station)
     if not hits:
         raise ToolError(f"No train station matches '{station}'. Try find_train_station.")
-    stop_ids = sched.expand_stop_ids([h["stop_id"] for h in hits])
+    return hits, sched.expand_stop_ids([h["stop_id"] for h in hits])
+
+
+def crowd_line(sched: gtfs.GTFSSchedule, route_id: str) -> str | None:
+    """The TrainLine code get_station_crowd expects, for a GTFS route."""
+    line = sched.line_code(route_id).upper()
+    short = sched.routes.get(route_id, {}).get("route_short_name", "").upper()
+    if short in ("CG", "CE"):
+        return f"{short}L"
+    return {"BP": "BPL", "SK": "SLRT", "PG": "PLRT"}.get(line, line if line in TRAIN_LINE_NAMES else None)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_scheduled_train_departures(
+    station: Annotated[str, Field(description="Station name or code, e.g. 'Bishan' or 'NS17'")],
+    to_station: Annotated[str | None, Field(description="Only trains that go on to stop here, e.g. 'Dhoby Ghaut'. Use this for a commuter's direction of travel.")] = None,
+    line: Annotated[str | None, Field(description="Only this line, e.g. 'NSL', 'DTL', 'CCL' (or short codes 'NS', 'DT')")] = None,
+    window_minutes: Annotated[int, Field(ge=5, le=240)] = 30,
+    limit: Annotated[int, Field(ge=1, le=50)] = 12,
+) -> dict[str, Any]:
+    """SCHEDULED (timetable, not live) MRT/LRT departures from a station, from LTA's GTFS train schedule. Filter by to_station and/or line to get one direction. LTA does not publish real-time next-train times; check get_train_service_alerts for disruptions."""
+    svc = services()
+    sched = await svc.train_schedule()
+    hits, stop_ids = _station_stop_ids(sched, station)
+    to_ids = _station_stop_ids(sched, to_station)[1] if to_station else None
     now = svc.now()
-    deps = sched.departures(stop_ids, now, window_minutes=window_minutes, limit=limit)
-    return {
+    deps = sched.departures(stop_ids, now, window_minutes=window_minutes, limit=limit, to_stop_ids=to_ids, line=line)
+    out: dict[str, Any] = {
         "station_matches": sorted({h.get("stop_name", "") for h in hits}),
         "kind": "scheduled timetable (not real-time)",
         "as_of": now.isoformat(timespec="seconds"),
         "departures": [
             {
                 "time": d.when.strftime("%H:%M"),
+                "eta": d.when.isoformat(timespec="seconds"),
                 "minutes": _minutes_until(d.when, now),
                 "line": sched.route_label(d.route_id),
+                "line_code": sched.line_code(d.route_id),
                 "towards": d.headsign or None,
                 "direction_id": d.direction_id or None,
                 "platform_stop_id": d.stop_id,
             }
             for d in deps
+        ],
+    }
+    if not deps and (to_station or line):
+        out["note"] = "No scheduled trains match in this window. Check the direction/line with check_train_leg, or widen window_minutes."
+    return out
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def check_train_leg(
+    board_station: Annotated[str, Field(description="Station where the commuter boards, name or code, e.g. 'Bishan' or 'NS17'")],
+    alight_station: Annotated[str, Field(description="Station where they get off, e.g. 'Dhoby Ghaut'")],
+) -> dict[str, Any]:
+    """Check that a train runs directly from one MRT/LRT station to another (no change of line), from today's timetable. Returns each line that does it with direction ('towards'), stops travelled, scheduled ride minutes, and the station codes to use with get_station_crowd."""
+    svc = services()
+    sched = await svc.train_schedule()
+    board_hits, board_ids = _station_stop_ids(sched, board_station)
+    alight_hits, alight_ids = _station_stop_ids(sched, alight_station)
+    options = sched.leg_options(board_ids, alight_ids, svc.now().date())
+    board_name = board_hits[0].get("stop_name")
+    alight_name = alight_hits[0].get("stop_name")
+    if not options:
+        raise ToolError(
+            f"No direct train from {board_name} to {alight_name} today. The trip may need a change of line, "
+            "or the stations may be on different lines: check each leg separately."
+        )
+    code = lambda stop_id: sched.stops.get(stop_id, {}).get("stop_code") or stop_id  # noqa: E731
+    return {
+        "board": board_name,
+        "alight": alight_name,
+        "options": [
+            {
+                "line": o["line"],
+                "line_name": sched.route_label(o["route_id"]),
+                "crowd_line": crowd_line(sched, o["route_id"]),
+                "direction_id": o["direction_id"],
+                "towards": o["towards"],
+                "board_code": code(o["board_stop_id"]),
+                "alight_code": code(o["alight_stop_id"]),
+                "stops_travelled": o["stops_travelled"],
+                "ride_min": o["ride_min"],
+                "trains_today": o["trips_on_day"],
+            }
+            for o in options
         ],
     }
 

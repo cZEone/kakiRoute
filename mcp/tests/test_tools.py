@@ -35,7 +35,7 @@ async def ok(name: str, args: dict[str, Any] | None = None) -> Any:
 async def test_all_tools_listed_read_only():
     async with Client(mcp) as client:
         tools = (await client.list_tools()).tools
-    assert len(tools) == 21
+    assert len(tools) == 22
     assert all(t.annotations and t.annotations.read_only_hint for t in tools)
 
 
@@ -159,6 +159,57 @@ async def test_scheduled_departures_timetable_and_frequency(install):
     assert deps[2]["towards"] == "Marina South Pier"  # Sunday-only trip T_SUN at 08:12 excluded on Wednesday
     # T_END terminates at Bishan at 08:06, so it is an arrival, not a departure.
     assert all(d["towards"] != "Bishan" for d in deps)
+
+
+async def test_departures_filtered_to_direction_and_line(install):
+    install()
+    # Trips from Bishan that go on to Braddell: T1 (NSL, 08:10) and the Circle Line frequency trip F1.
+    data = await ok("get_scheduled_train_departures", {"station": "Bishan", "to_station": "Braddell", "window_minutes": 15})
+    assert [(d["time"], d["line_code"]) for d in data["departures"]] == [
+        ("08:03", "CCL"),
+        ("08:08", "CCL"),
+        ("08:10", "NSL"),
+        ("08:13", "CCL"),
+    ]
+    data = await ok("get_scheduled_train_departures", {"station": "Bishan", "to_station": "Braddell", "line": "nsl", "window_minutes": 15})
+    assert [d["time"] for d in data["departures"]] == ["08:10"]
+    # Nothing runs from Bishan back to Ang Mo Kio in the fixture.
+    data = await ok("get_scheduled_train_departures", {"station": "Bishan", "to_station": "Ang Mo Kio"})
+    assert data["departures"] == [] and "check_train_leg" in data["note"]
+
+
+async def test_check_train_leg(install):
+    install()
+    data = await ok("check_train_leg", {"board_station": "Ang Mo Kio", "alight_station": "Bishan"})
+    by_line = {o["line"]: o for o in data["options"]}
+    assert set(by_line) == {"NSL", "CCL"}
+    nsl = by_line["NSL"]
+    # T1 departs AMK 08:05, arrives Bishan 08:09; T_END departs 08:01, arrives 08:06 -> median 4.5 rounds to 4.
+    assert nsl["ride_min"] in (4, 5) and nsl["stops_travelled"] == 1 and nsl["trains_today"] == 2
+    assert nsl["board_code"] == "NS16" and nsl["alight_code"] == "NS17" and nsl["crowd_line"] == "NSL"
+    assert nsl["towards"] in ("Marina South Pier", "Bishan")
+    assert by_line["CCL"]["alight_code"] == "CC15"
+
+
+async def test_check_train_leg_wrong_direction(install):
+    install()
+    is_error, text = await call("check_train_leg", {"board_station": "Braddell", "alight_station": "Ang Mo Kio"})
+    assert is_error and "No direct train" in text
+
+
+def test_parse_bus_advisories():
+    from sg_transport_mcp.server import parse_bus_advisories
+
+    msgs = [
+        {"content": "11/11/2026 14:25-Bus services 5, 23, 59, 518 and 966 are delayed by up to 25 minutes due to an accident along PIE.", "created": "x"},
+        {"content": "Bus services 170 and 170X have been diverted from Woodlands Road.", "created": "y"},
+        {"content": "Bus service 961 is not calling at Blk 123.", "created": "z"},
+        {"content": "1710hrs: NEL - No train service between Harbourfront and Dhoby Ghaut.", "created": "w"},
+    ]
+    out = parse_bus_advisories(msgs)
+    assert [a["services"] for a in out] == [["5", "23", "59", "518", "966"], ["170", "170X"], ["961"]]
+    assert [a["kind"] for a in out] == ["delay", "diversion", "advisory"]
+    assert out[0]["delay_up_to_min"] == 25 and out[1]["delay_up_to_min"] is None
 
 
 async def test_find_train_station(install):

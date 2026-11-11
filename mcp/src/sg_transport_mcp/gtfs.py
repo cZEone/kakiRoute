@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+import statistics
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -38,7 +39,7 @@ class Departure:
 
 @dataclass
 class GTFSSchedule:
-    """An in-memory GTFS Schedule feed. stop_times.txt is streamed on demand, not held in memory."""
+    """An in-memory GTFS Schedule feed. stop_times.txt is indexed by stop on first use."""
 
     zip_bytes: bytes
     stops: dict[str, dict[str, str]] = field(default_factory=dict)
@@ -47,6 +48,33 @@ class GTFSSchedule:
     calendar: list[dict[str, str]] = field(default_factory=list)
     calendar_dates: list[dict[str, str]] = field(default_factory=list)
     frequencies: dict[str, list[tuple[int, int, int]]] = field(default_factory=dict)
+    _by_stop: dict[str, list[tuple[str, int, int, int]]] | None = field(default=None, repr=False)
+    _last_seq: dict[str, int] = field(default_factory=dict, repr=False)
+    _first_dep: dict[str, int] = field(default_factory=dict, repr=False)
+
+    def _index(self) -> dict[str, list[tuple[str, int, int, int]]]:
+        """stop_id -> [(trip_id, stop_sequence, arrival secs, departure secs)], built once.
+
+        A live train-leg card asks for departures every 20s; re-reading ~400k stop_times rows
+        each time takes seconds, the index makes each query a few dict lookups.
+        """
+        if self._by_stop is None:
+            by_stop: dict[str, list[tuple[str, int, int, int]]] = {}
+            trip_ids: dict[str, str] = {}  # intern trip ids: one string object per trip
+            for row in self._read("stop_times.txt"):
+                dep = parse_gtfs_time(row.get("departure_time") or row.get("arrival_time") or "")
+                arr = parse_gtfs_time(row.get("arrival_time") or row.get("departure_time") or "")
+                if dep is None or arr is None:
+                    continue
+                trip_id = trip_ids.setdefault(row.get("trip_id", ""), row.get("trip_id", ""))
+                seq = _seq(row)
+                by_stop.setdefault(row.get("stop_id", ""), []).append((trip_id, seq, arr, dep))
+                if seq > self._last_seq.get(trip_id, -1):
+                    self._last_seq[trip_id] = seq
+                if dep < self._first_dep.get(trip_id, dep + 1):
+                    self._first_dep[trip_id] = dep
+            self._by_stop = by_stop
+        return self._by_stop
 
     @classmethod
     def from_zip(cls, zip_bytes: bytes) -> "GTFSSchedule":
@@ -114,37 +142,109 @@ class GTFSSchedule:
 
     # ---- departures ----------------------------------------------------------------------
 
-    def departures(self, stop_ids: set[str], now: datetime, window_minutes: int = 60, limit: int = 10) -> list[Departure]:
-        """Scheduled departures from the given stops between now and now+window (SGT)."""
+    def line_code(self, route_id: str) -> str:
+        """LTA route ids are per service pattern ('NSL_NS1_NS28'); the line is the prefix."""
+        return route_id.split("_", 1)[0]
+
+    def line_matches(self, route_id: str, line: str) -> bool:
+        want = line.strip().upper()
+        short = self.routes.get(route_id, {}).get("route_short_name", "").upper()
+        return want in (self.line_code(route_id).upper(), short)
+
+    def leg_options(self, board_ids: set[str], alight_ids: set[str], day: date) -> list[dict[str, Any]]:
+        """Every line that runs from a board stop to a later alight stop, from trips scheduled on `day`.
+
+        Grouped by (line, direction): scheduled ride minutes (median), stops travelled, headsign and
+        the platform stop codes used, so callers can show "NSL towards Marina South Pier, 6 stops, 9 min".
+        """
+        services = self.active_services(day)
+        index = self._index()
+        calls: dict[str, list[tuple[int, int, str, bool]]] = {}  # trip -> (seq, secs, stop_id, is_board)
+        for ids, is_board in ((board_ids, True), (alight_ids, False)):
+            for stop_id in ids:
+                for trip_id, seq, arr, dep in index.get(stop_id, ()):
+                    trip = self.trips.get(trip_id)
+                    if not trip or trip.get("service_id") not in services:
+                        continue
+                    calls.setdefault(trip_id, []).append((seq, dep if is_board else arr, stop_id, is_board))
+
+        groups: dict[tuple[str, str], dict[str, Any]] = {}
+        for trip_id, events in calls.items():
+            events.sort()
+            boards = [e for e in events if e[3]]
+            for b in boards:
+                a = next((e for e in events if not e[3] and e[0] > b[0]), None)
+                if a is None:
+                    continue
+                trip = self.trips[trip_id]
+                key = (self.line_code(trip.get("route_id", "")), trip.get("direction_id", ""))
+                g = groups.setdefault(key, {"rides": [], "stops": [], "headsigns": {}, "board": {}, "alight": {}, "route_id": trip.get("route_id", "")})
+                g["rides"].append((a[1] - b[1]) / 60)
+                g["stops"].append(a[0] - b[0])
+                for bucket, value in (("headsigns", trip.get("trip_headsign", "")), ("board", b[2]), ("alight", a[2])):
+                    g[bucket][value] = g[bucket].get(value, 0) + 1
+                break  # one boarding per trip (loop lines can pass a stop twice)
+
+        options = []
+        for (line, direction), g in groups.items():
+            top = lambda d: max(d, key=d.get)  # noqa: E731 - most common value
+            options.append(
+                {
+                    "line": line,
+                    "route_id": g["route_id"],
+                    "direction_id": direction or None,
+                    "towards": top(g["headsigns"]) or None,
+                    "board_stop_id": top(g["board"]),
+                    "alight_stop_id": top(g["alight"]),
+                    "ride_min": round(statistics.median(g["rides"])),
+                    "stops_travelled": round(statistics.median(g["stops"])),
+                    "trips_on_day": len(g["rides"]),
+                }
+            )
+        options.sort(key=lambda o: -o["trips_on_day"])
+        return options
+
+    def departures(
+        self,
+        stop_ids: set[str],
+        now: datetime,
+        window_minutes: int = 60,
+        limit: int = 10,
+        *,
+        to_stop_ids: set[str] | None = None,
+        line: str | None = None,
+    ) -> list[Departure]:
+        """Scheduled departures from the given stops between now and now+window (SGT).
+
+        to_stop_ids: only trains that later call at one of these stops (i.e. heading your way).
+        line: only trains on this line (route_id prefix such as 'NSL', or route short name such as 'NS').
+        """
         now = now.astimezone(SGT)
         horizon = now + timedelta(minutes=window_minutes)
-        freq_trips = set(self.frequencies)
-        at_stop: list[tuple[str, int, str, int]] = []  # (trip_id, departure secs, stop_id, stop_sequence)
-        first_time: dict[str, int] = {}  # first departure of each frequency-based trip template
-        last_seq: dict[str, int] = {}  # final stop of each trip, so terminating trains aren't "departures"
-        for row in self._read("stop_times.txt"):
-            trip_id = row.get("trip_id", "")
-            t = parse_gtfs_time(row.get("departure_time") or row.get("arrival_time") or "")
-            if t is None:
-                continue
-            try:
-                seq = int(row.get("stop_sequence") or 0)
-            except ValueError:
-                seq = 0
-            if seq > last_seq.get(trip_id, -1):
-                last_seq[trip_id] = seq
-            if trip_id in freq_trips and (trip_id not in first_time or t < first_time[trip_id]):
-                first_time[trip_id] = t
-            if row.get("stop_id") in stop_ids:
-                at_stop.append((trip_id, t, row["stop_id"], seq))
-        at_stop = [(trip, t, stop, seq) for trip, t, stop, seq in at_stop if seq < last_seq.get(trip, seq + 1)]
+        index = self._index()
+        last_seq = self._last_seq  # final stop of each trip, so terminating trains aren't "departures"
+        first_time = self._first_dep  # first departure of each (frequency-based) trip template
+        at_stop = [  # (trip_id, departure secs, stop_id, stop_sequence)
+            (trip_id, dep, stop_id, seq)
+            for stop_id in stop_ids
+            for trip_id, seq, _arr, dep in index.get(stop_id, ())
+            if seq < last_seq.get(trip_id, seq + 1)
+        ]
+        alight_seqs: dict[str, list[int]] = {}  # where each trip calls at a to_stop
+        for stop_id in to_stop_ids or ():
+            for trip_id, seq, *_times in index.get(stop_id, ()):
+                alight_seqs.setdefault(trip_id, []).append(seq)
+        if to_stop_ids:
+            at_stop = [e for e in at_stop if any(s > e[3] for s in alight_seqs.get(e[0], ()))]
+        if line:
+            at_stop = [e for e in at_stop if self.line_matches(self.trips.get(e[0], {}).get("route_id", ""), line)]
 
         out: list[Departure] = []
         today = now.date()
         for day in (today - timedelta(days=1), today):  # yesterday's service day can run past midnight
             services = self.active_services(day)
             midnight = datetime(day.year, day.month, day.day, tzinfo=SGT)
-            for trip_id, t, stop_id, _seq in at_stop:
+            for trip_id, t, stop_id, _ in at_stop:
                 trip = self.trips.get(trip_id)
                 if not trip or trip.get("service_id") not in services:
                     continue
@@ -168,6 +268,13 @@ class GTFSSchedule:
                         out.append(_dep(when, stop_id, trip_id, trip))
         out.sort(key=lambda d: d.when)
         return out[:limit]
+
+
+def _seq(row: dict[str, str]) -> int:
+    try:
+        return int(row.get("stop_sequence") or 0)
+    except ValueError:
+        return 0
 
 
 def _dep(when: datetime, stop_id: str, trip_id: str, trip: dict[str, str]) -> Departure:
