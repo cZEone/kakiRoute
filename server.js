@@ -1,0 +1,92 @@
+import express from "express";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { BusData } from "./lib/busdata.js";
+import { RouteSetupAgent } from "./lib/agent.js";
+import { mockArrivals } from "./lib/fixtures.js";
+
+const MOCK = process.env.MOCK === "1";
+const PORT = Number(process.env.PORT) || 3000;
+const ARRIVELAH = "https://arrivelah2.busrouter.sg/?id=";
+const ARRIVALS_CACHE_MS = 15_000;
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const app = express();
+app.use(express.json({ limit: "32kb" }));
+app.use(express.static(join(__dirname, "public")));
+
+// --- Bus stop / service data (loaded lazily so the timings screen works even if it fails) ---
+let busDataPromise = null;
+function getBusData() {
+  if (!busDataPromise) {
+    busDataPromise = BusData.load({ mock: MOCK }).catch((err) => {
+      busDataPromise = null; // retry next time
+      throw err;
+    });
+  }
+  return busDataPromise;
+}
+getBusData().then(
+  (d) => console.log(`Loaded ${d.stops.size} stops, ${d.services.size} services${MOCK ? " (mock)" : ""}`),
+  (err) => console.warn("Could not load bus stop data yet:", err.message),
+);
+
+let agent = null;
+async function getAgent() {
+  if (!agent) agent = new RouteSetupAgent({ busData: await getBusData() });
+  return agent;
+}
+
+// --- Live arrivals (arrivelah) ---
+const arrivalsCache = new Map();
+app.get("/api/arrivals/:code", async (req, res) => {
+  const code = req.params.code;
+  if (!/^\d{5}$/.test(code)) return res.status(400).json({ error: "Stop code must be 5 digits" });
+  if (MOCK) return res.json({ ...mockArrivals(code), fetchedAt: new Date().toISOString() });
+
+  const hit = arrivalsCache.get(code);
+  if (hit && Date.now() - hit.at < ARRIVALS_CACHE_MS) return res.json(hit.body);
+  try {
+    const r = await fetch(ARRIVELAH + code, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const body = { ...(await r.json()), fetchedAt: new Date().toISOString() };
+    arrivalsCache.set(code, { at: Date.now(), body });
+    res.json(body);
+  } catch (err) {
+    res.status(502).json({ error: `Arrival timings unavailable (${err.message})` });
+  }
+});
+
+// --- Stop lookup (manual route entry) ---
+app.get("/api/stops/:code", async (req, res) => {
+  try {
+    const s = (await getBusData()).stopSummary(req.params.code);
+    s ? res.json(s) : res.status(404).json({ error: "Stop not found" });
+  } catch {
+    res.status(503).json({ error: "Stop data unavailable" });
+  }
+});
+
+// --- Route setup agent ---
+app.post("/api/setup/start", async (req, res) => {
+  const text = String(req.body?.text || "").trim();
+  if (!text) return res.status(400).json({ type: "error", message: "Describe your route first." });
+  if (text.length > 2000) return res.status(400).json({ type: "error", message: "Please keep the description shorter." });
+  try {
+    res.json(await (await getAgent()).start(text));
+  } catch (err) {
+    res.status(503).json({ type: "error", message: `Route setup unavailable: ${err.message}` });
+  }
+});
+
+app.post("/api/setup/reply", async (req, res) => {
+  const { sessionId, text } = req.body || {};
+  if (!sessionId || !String(text || "").trim()) return res.status(400).json({ type: "error", message: "Missing answer." });
+  try {
+    res.json(await (await getAgent()).reply(String(sessionId), String(text).slice(0, 1000)));
+  } catch (err) {
+    res.status(503).json({ type: "error", message: `Route setup unavailable: ${err.message}` });
+  }
+});
+
+app.listen(PORT, () => console.log(`kakiRoute on http://localhost:${PORT}${MOCK ? " (MOCK data)" : ""}`));

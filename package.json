@@ -1,0 +1,26 @@
+{
+  "name": "kakiroute",
+  "version": "1.0.0",
+  "description": "Glanceable timings for your own preferred bus routes",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "mock": "MOCK=1 node server.js",
+    "test": "node --test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cZEone/kakiRoute.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/cZEone/kakiRoute/issues"
+  },
+  "homepage": "https://github.com/cZEone/kakiRoute#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "express": "^5.3.0"
+  },
+  "type": "module"
+}

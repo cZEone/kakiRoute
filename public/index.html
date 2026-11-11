@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <title>kakiRoute</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="brand">kaki<span>Route</span></h1>
+    <div class="topbar-right">
+      <span id="updated" class="muted" aria-live="polite"></span>
+      <button id="refresh" class="icon-btn" aria-label="Refresh timings" title="Refresh">↻</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Home: saved routes with live timings -->
+    <section id="view-home" class="view">
+      <div id="routes" class="routes"></div>
+      <div id="empty" class="empty" hidden>
+        <p class="empty-title">No routes yet</p>
+        <p class="muted">Save the routes you already trust. Next time, open the app in the lift and see which stop to walk to.</p>
+      </div>
+      <button id="add-route" class="btn primary block">+ Add a route</button>
+    </section>
+
+    <!-- Add / edit a route -->
+    <section id="view-edit" class="view" hidden>
+      <button id="back" class="link-btn">← Back</button>
+      <h2 id="edit-title">Add a route</h2>
+
+      <div id="ai-panel" class="panel">
+        <label for="describe" class="label">Describe your route</label>
+        <textarea id="describe" rows="4" placeholder="e.g. I take 961 from the stop outside Blk 123, get off at Bt Panjang Int, walk across the road and take 975 to work."></textarea>
+        <div class="row">
+          <button id="ai-start" class="btn primary">Set up with AI</button>
+          <button id="manual" class="link-btn">Enter it manually instead</button>
+        </div>
+        <div id="chat" class="chat" aria-live="polite"></div>
+        <form id="answer-form" class="answer" hidden>
+          <div id="answer-options" class="chips"></div>
+          <div class="row">
+            <input id="answer" type="text" autocomplete="off" placeholder="Your answer">
+            <button class="btn">Send</button>
+          </div>
+        </form>
+      </div>
+
+      <form id="editor" class="panel" hidden>
+        <p id="ai-notes" class="notes" hidden></p>
+        <label class="label" for="r-name">Route name</label>
+        <input id="r-name" type="text" required maxlength="60" placeholder="To work via Bt Panjang Int">
+        <label class="label" for="r-walk">Minutes walking from home to the first stop</label>
+        <input id="r-walk" type="number" min="0" max="60" required value="3" inputmode="numeric">
+        <div id="legs"></div>
+        <button type="button" id="add-leg" class="link-btn">+ Add a transfer</button>
+        <p id="editor-error" class="error" hidden></p>
+        <div class="row">
+          <button type="submit" class="btn primary">Save route</button>
+          <button type="button" id="delete-route" class="btn danger" hidden>Delete</button>
+        </div>
+      </form>
+    </section>
+  </main>
+
+  <template id="leg-template">
+    <fieldset class="leg">
+      <legend></legend>
+      <div class="walk-before">
+        <label class="label">Minutes walking from the last stop to this one</label>
+        <input name="walkBeforeMin" type="number" min="0" max="30" value="0" inputmode="numeric">
+      </div>
+      <div class="grid">
+        <div>
+          <label class="label">Bus</label>
+          <input name="service" type="text" required maxlength="5" placeholder="961" autocapitalize="characters">
+        </div>
+        <div>
+          <label class="label">Ride (min)</label>
+          <input name="rideMin" type="number" min="1" max="180" required value="10" inputmode="numeric">
+        </div>
+        <div>
+          <label class="label">Board at stop code</label>
+          <input name="board" type="text" required pattern="\d{5}" maxlength="5" placeholder="44009" inputmode="numeric">
+          <small class="stopname" data-for="board"></small>
+        </div>
+        <div>
+          <label class="label">Alight at stop code</label>
+          <input name="alight" type="text" required pattern="\d{5}" maxlength="5" placeholder="44331" inputmode="numeric">
+          <small class="stopname" data-for="alight"></small>
+        </div>
+      </div>
+      <button type="button" class="link-btn remove-leg">Remove this transfer</button>
+    </fieldset>
+  </template>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
