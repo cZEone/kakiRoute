@@ -87,6 +87,8 @@ npm test
 | `lib/fixtures.js` | Mock network for `MOCK=1` and tests |
 | `public/timing.js` | Pure "which bus do I catch on each leg" calculation |
 | `public/app.js` | UI: home timings, route editor, AI setup chat. Routes are stored in `localStorage` |
+| `public/about.html` | Landing page, served at `/about` |
+| `public/icon.svg` | Logo. PNG app icons and `manifest.webmanifest` sit beside it |
 
 ## Known limits
 

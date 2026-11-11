@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="kakiRoute">
+  <rect width="64" height="64" rx="16" fill="#1E8A44"/>
+  <path d="M19 48 V38" stroke="#fff" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <path d="M19 38 H44" stroke="#FFC83D" stroke-width="4.4" stroke-linecap="round" stroke-dasharray="0.1 6.2" fill="none"/>
+  <circle cx="19" cy="48" r="6.5" fill="#fff"/>
+  <circle cx="19" cy="48" r="2.8" fill="#5A2D82"/>
+  <path d="M44 40 C38 32.5 34 28 34 22.5 A10 10 0 0 1 54 22.5 C54 28 50 32.5 44 40 Z" fill="#E5322D" stroke="#fff" stroke-width="2.6" stroke-linejoin="round"/>
+  <circle cx="44" cy="22.5" r="3.6" fill="#fff"/>
+</svg>
