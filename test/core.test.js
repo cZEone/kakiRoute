@@ -129,3 +129,29 @@ test("agent: missing key gives a friendly message", async () => {
   assert.match(res.message, /OPENCODE_API_KEY/);
   if (saved) process.env.OPENCODE_API_KEY = saved;
 });
+
+test("agent: retries without reasoning_content when the provider rejects it", async () => {
+  const { default: OpenAI } = await import("openai");
+  const calls = [];
+  const replies = [
+    { role: "assistant", content: null, reasoning_content: "thinking...", tool_calls: [tc("t1", "search_stops", { query: "Mock Blk 101" })] },
+    { role: "assistant", content: "Which stop?" },
+  ];
+  const client = {
+    chat: {
+      completions: {
+        create: async ({ messages }) => {
+          calls.push(messages);
+          if (messages.some((m) => m.reasoning_content)) throw new OpenAI.BadRequestError(400, { message: "unknown field reasoning_content" }, "bad", new Headers());
+          const message = replies.shift();
+          return { choices: [{ message, finish_reason: message.tool_calls ? "tool_calls" : "stop" }] };
+        },
+      },
+    },
+  };
+  const res = await new RouteSetupAgent({ busData: bus, client }).start("901 from Mock Blk 101");
+  assert.equal(res.type, "question");
+  assert.equal(calls.length, 3); // first ok, second rejected with reasoning, retried without
+  const assistant = calls[2].find((m) => m.role === "assistant");
+  assert.equal(assistant.content, null);
+});

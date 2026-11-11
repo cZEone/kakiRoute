@@ -52,7 +52,7 @@ OPENCODE_API_KEY=your-key
 npm run check-ai
 ```
 
-It prints the endpoint it found, the models your plan includes, the model it picked, and whether a test tool call worked. Then start the app:
+It prints the endpoint it found, the models your plan includes, the model it picked, and whether a two-step tool-calling exchange worked. To test every model on your plan, run `npm run check-ai -- --all`. Then start the app:
 
 ```bash
 npm start
@@ -65,7 +65,7 @@ Optional settings:
 | Variable | Default |
 |---|---|
 | `OPENCODE_MODEL` | First available model matching Kimi, then GLM, DeepSeek, Qwen |
-| `OPENCODE_BASE_URL` | Auto-detected from `https://opencode.ai/zen/go/v1` and `https://opencode.ai/inference/go/openai/v1` |
+| `OPENCODE_BASE_URL` | Auto-detected, trying `https://opencode.ai/inference/go/openai/v1` first, then `https://opencode.ai/zen/go/v1` |
 
 **Offline / mock mode.** `npm run mock` uses a small fake network (stops named "Mock …", codes `900xx`) and generated arrival times, so you can try the UI without network access.
 
