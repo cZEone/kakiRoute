@@ -63,7 +63,8 @@ function fakeClient(script) {
     calls,
     chat: {
       completions: {
-        create: async (params) => {
+        create: async (params, opts) => {
+          assert.match(opts?.headers?.["x-opencode-session"] || "", /^[0-9a-f-]{36}$/);
           calls.push(structuredClone(params.messages));
           const message = script.shift();
           return { choices: [{ message, finish_reason: message.tool_calls ? "tool_calls" : "stop" }] };

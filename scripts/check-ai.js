@@ -3,6 +3,7 @@
 //   npm run check-ai           test the model the app will use
 //   npm run check-ai -- --all  test every model on your plan
 import OpenAI from "openai";
+import { randomUUID } from "node:crypto";
 import { connect } from "../lib/llm.js";
 import { FUNCTIONS } from "../lib/agent.js";
 
@@ -11,11 +12,12 @@ try {
 } catch {}
 
 async function tryModel(client, model) {
+  const opts = { headers: { "x-opencode-session": randomUUID() } };
   const messages = [
     { role: "system", content: "You help a commuter save a bus route. Use the tools." },
     { role: "user", content: "I take bus 961 from Opp Blk 123. Look up that stop." },
   ];
-  const first = await client.chat.completions.create({ model, messages, tools: FUNCTIONS, tool_choice: "auto" });
+  const first = await client.chat.completions.create({ model, messages, tools: FUNCTIONS, tool_choice: "auto" }, opts);
   const msg = first.choices?.[0]?.message;
   const call = msg?.tool_calls?.[0];
   if (!call) return "answered without calling a tool";
@@ -25,11 +27,11 @@ async function tryModel(client, model) {
     messages.push({ role: "tool", tool_call_id: tc.id, content: JSON.stringify([{ code: "44009", name: "Opp Blk 123", services: ["961"] }]) });
   }
   try {
-    await client.chat.completions.create({ model, messages, tools: FUNCTIONS, tool_choice: "auto" });
+    await client.chat.completions.create({ model, messages, tools: FUNCTIONS, tool_choice: "auto" }, opts);
   } catch (err) {
     if (!(err instanceof OpenAI.BadRequestError) || !msg.reasoning_content) throw err;
     const stripped = messages.map(({ reasoning_content, ...m }) => m);
-    await client.chat.completions.create({ model, messages: stripped, tools: FUNCTIONS, tool_choice: "auto" });
+    await client.chat.completions.create({ model, messages: stripped, tools: FUNCTIONS, tool_choice: "auto" }, opts);
   }
   return `OK (${call.function.name} ${call.function.arguments})`;
 }
