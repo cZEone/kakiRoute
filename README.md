@@ -5,7 +5,7 @@ Helps a commuter standing in the lift decide which bus stop or MRT station to wa
 Save your own routes once: bus legs, MRT/LRT train legs, and transfers that need a short walk. Then open the app and see, for each route:
 
 - which stop or station to walk to, and when to leave;
-- the bus you'd actually catch on each leg, if you leave now, and how full it is (**Seats** / **Standing** / **Crowded**);
+- the bus you'd actually catch on each leg, if you leave now, and how full it is (**Seats** / **Standing** / **Limited standing**, LTA's own terms);
 - for train legs, the next scheduled train in your direction and how crowded the station is (**Quiet** / **Busy** / **Packed**);
 - a warning when LTA reports a disruption on your train line, or a delay or diversion on one of your bus services;
 - how many minutes you'd have spare at each transfer (amber when it's under 2 minutes);
@@ -47,7 +47,7 @@ It only runs when you tap the button, so the timings screen stays instant and th
 
 - Live arrivals: official [LTA DataMall](https://datamall.lta.gov.sg) bus arrivals through the sg-transport MCP server in [`mcp/`](mcp/README.md), when `LTA_ACCOUNT_KEY` is set. Each bus comes with its crowding (LTA's load: seats, standing, limited standing) and whether its time is live GPS or the operator's schedule, shown as *sched.* on the card. Without a key, or if the MCP server can't start, arrivals come from [arrivelah](https://github.com/cheeaun/arrivelah) (`https://arrivelah2.busrouter.sg/?id=<stop code>`). Either way the server caches them for 15 seconds.
 - Trains (needs `LTA_ACCOUNT_KEY`): LTA DataMall's GTFS train timetable, through the same MCP server. LTA does not publish live train arrivals, so train times are the **timetable**, labelled as such on the card. Departures are filtered to trains that go on to stop at your alighting station.
-- Station crowding (needs `LTA_ACCOUNT_KEY`): LTA's real-time station crowd level (updated every 10 minutes) when you'd board within 15 minutes, otherwise LTA's 30-minute crowd forecast. It is per station, not per platform or carriage.
+- Station crowding (needs `LTA_ACCOUNT_KEY`): LTA's real-time station crowd level (updated every 10 minutes) when you'd board within 10 minutes, otherwise LTA's 30-minute crowd forecast. It is per station, not per platform or carriage.
 - Service alerts (needs `LTA_ACCOUNT_KEY`): LTA's train service alerts, including the bus delay and diversion notices LTA publishes with them, matched against the lines and bus services in your routes. Cached for 30 seconds.
 - Rain forecast: NEA 2-hour forecast from [data.gov.sg](https://api-open.data.gov.sg/v2/real-time/api/two-hr-forecast), cached for 5 minutes. Set `DATA_GOV_SG_API_KEY` for higher rate limits.
 - Stops and service routes: [busrouter.sg](https://busrouter.sg) static data (`data.busrouter.sg/v1/stops.min.json`, `services.min.json`), used by the setup agent and the stop-name lookup.
@@ -117,6 +117,21 @@ Optional settings:
 ```bash
 npm test
 ```
+
+## API
+
+The browser talks to these server endpoints. Train, crowd and status endpoints need `LTA_ACCOUNT_KEY`; without it they return 503 with an explanation.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/arrivals/:code` | Next buses at a 5-digit stop, with load and live/scheduled (LTA via MCP, else arrivelah) |
+| `GET /api/train-leg?from=NS17&to=NS24&line=NSL&crowdLine=NSL` | Scheduled trains from `from` that go on to `to`, plus the boarding station's crowd (now and forecast) |
+| `GET /api/crowd/:line?stations=NS17,NS24` | Station crowd on a line, real-time and 30-minute forecast (omit `stations` for the whole line) |
+| `GET /api/status` | Train line disruptions and the bus services LTA reports as delayed or diverted |
+| `GET /api/trains/check?from=Bishan&to=Dhoby Ghaut` | Lines that run directly between two stations, with direction, stops and ride time (route editor) |
+| `GET /api/trains/stations?q=bis` | Station name suggestions with their codes (route editor) |
+| `GET /api/stops/:code` | Bus stop name and services (route editor) |
+| `POST /api/decide`, `POST /api/setup/start`, `POST /api/setup/reply` | Help me decide, and the AI route setup chat |
 
 ## Layout
 

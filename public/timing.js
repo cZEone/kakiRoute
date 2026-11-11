@@ -4,7 +4,7 @@
 const TIGHT_BUFFER_MIN = 2;
 
 // Bus crowding codes used by LTA (and arrivelah).
-export const LOAD_LABEL = { SEA: "Seats", SDA: "Standing", LSD: "Crowded" };
+export const LOAD_LABEL = { SEA: "Seats", SDA: "Standing", LSD: "Limited standing" };
 export const LOAD_TITLE = { SEA: "Seats available", SDA: "Standing room available", LSD: "Limited standing room" };
 
 // arrivals response -> sorted, de-duplicated buses for one service:
@@ -38,7 +38,8 @@ export function arrivalTimes(arrivalsBody, serviceNo) {
 
 // Station crowd levels from LTA (per station, not per platform or carriage).
 export const CROWD_LABEL = { low: "Quiet", moderate: "Busy", high: "Packed" };
-const CROWD_NOW_MIN = 15; // within this many minutes, the real-time level beats the forecast
+// Within this many minutes the real-time level beats the forecast. LTA refreshes it every 10 minutes.
+const CROWD_NOW_MIN = 10;
 const SLOT_MIN = 30; // LTA forecasts crowding in 30-minute slots
 
 export const isTrain = (leg) => leg?.mode === "train";
@@ -65,6 +66,15 @@ export function crowdAt(crowd, when, now) {
   return null;
 }
 
+// LTA's advisory for this disrupted line ("1710hrs: NEL - No train service…"), not another line's.
+function lineMessage(status, seg) {
+  const names = [seg.line, alertLine(seg.line), seg.lineName].filter(Boolean).map((s) => String(s).toLowerCase());
+  return (status.messages || []).find((m) => {
+    const text = String(m).toLowerCase();
+    return names.some((n) => new RegExp(`\\b${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(text));
+  }) || null;
+}
+
 // Service alerts that affect one leg: a disrupted train line, or a bus service LTA says is delayed/diverted.
 export function legAlert(leg, status) {
   if (!status) return null;
@@ -75,7 +85,7 @@ export function legAlert(leg, status) {
     return {
       kind: "disruption",
       line: seg.line,
-      text: (status.messages || [])[0] || `${seg.lineName || seg.line}: train service disrupted`,
+      text: lineMessage(status, seg) || `${seg.lineName || seg.line}: train service disrupted`,
       atYourStations: hits,
       freeBus: seg.freeBus || null,
     };
@@ -131,7 +141,10 @@ export function planRoute(route, arrivalsByStop, now = new Date(), { trains = {}
     const extra = train
       ? { live: false, scheduled: true, towards: caught.towards || leg.towards || null, crowd: crowdAt(body.crowd, bus, now) }
       : { load: caught.load, live: caught.live };
-    legs.push({ ...leg, state: tight ? "tight" : "ok", atStop, bus, waitMin, missedEarlier, ...extra, alert: alerts.find((a) => a.leg === i) || null });
+    const alert = alerts.find((a) => a.leg === i) || null;
+    // A disrupted line marks the leg itself; `tight` is kept separately for the transfer-slack tag.
+    const state = alert?.kind === "disruption" ? "disrupted" : tight ? "tight" : "ok";
+    legs.push({ ...leg, state, tight, atStop, bus, waitMin, missedEarlier, ...extra, alert });
     if (tight) planStatus = worst(planStatus, "tight");
     t = addMin(bus, leg.rideMin || 0);
   }

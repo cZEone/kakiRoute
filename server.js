@@ -6,7 +6,17 @@ import { RouteSetupAgent } from "./lib/agent.js";
 import { getArrivals } from "./lib/arrivals.js";
 import { defaultTransport } from "./lib/sgtransport.js";
 import { decide } from "./lib/decide.js";
-import { trainLegData, serviceStatus, checkTrainLeg, TrainsUnavailable, STATION_CODE, LINE_CODE } from "./lib/trains.js";
+import {
+  trainLegData,
+  serviceStatus,
+  stationCrowd,
+  checkTrainLeg,
+  findTrainStation,
+  stationSuggestions,
+  TrainsUnavailable,
+  STATION_CODE,
+  LINE_CODE,
+} from "./lib/trains.js";
 import { sanitizeRoutes } from "./lib/routes.js";
 
 // Load settings such as OPENCODE_API_KEY from .env (git-ignored), if present.
@@ -97,6 +107,33 @@ app.get("/api/status", async (req, res) => {
     res.json(await serviceStatus());
   } catch (err) {
     trainsError(res, err);
+  }
+});
+
+// Station crowd levels on a line (LTA): real-time and 30-minute forecast.
+// GET /api/crowd/NSL?stations=NS17,NS24   (omit stations for the whole line)
+app.get("/api/crowd/:line", async (req, res) => {
+  const line = String(req.params.line).toUpperCase();
+  const stations = String(req.query.stations || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+  if (!LINE_CODE.test(line) || stations.length > 12 || !stations.every((s) => STATION_CODE.test(s))) {
+    return res.status(400).json({ error: "Use a line code such as NSL and up to 12 station codes such as NS17." });
+  }
+  try {
+    res.json(await stationCrowd(line, stations));
+  } catch (err) {
+    trainsError(res, err);
+  }
+});
+
+// Route editor: station name suggestions while typing ("bis" -> Bishan: NS17, CC15).
+app.get("/api/trains/stations", async (req, res) => {
+  const q = String(req.query.q || "").trim().slice(0, 40);
+  if (q.length < 2) return res.json({ stations: [] });
+  try {
+    const found = await findTrainStation(q);
+    res.json({ stations: stationSuggestions(found) });
+  } catch (err) {
+    err instanceof TrainsUnavailable ? trainsError(res, err) : res.json({ stations: [] });
   }
 });
 

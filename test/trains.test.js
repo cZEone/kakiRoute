@@ -3,7 +3,16 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { SgTransport } from "../lib/sgtransport.js";
-import { trainLegData, serviceStatus, checkTrainLeg, trainLegFromOption, clearTrainsCache, TrainsUnavailable } from "../lib/trains.js";
+import {
+  trainLegData,
+  serviceStatus,
+  stationCrowd,
+  stationSuggestions,
+  checkTrainLeg,
+  trainLegFromOption,
+  clearTrainsCache,
+  TrainsUnavailable,
+} from "../lib/trains.js";
 import { sanitizeRoutes } from "../lib/routes.js";
 import { planRoute, crowdAt, legAlert, alertLine, trainKey } from "../public/timing.js";
 import { describeRoute } from "../lib/decide.js";
@@ -182,6 +191,69 @@ test("alerts: disrupted line and delayed bus mark the route, even without timing
     trains: { [trainKey(TRAIN_LEG)]: { departures: [{ time: at(3) }] } },
   });
   assert.equal(trainOnly.status, "disrupted");
+});
+
+test("a disrupted line marks the leg itself, keeps transfer slack, and uses that line's LTA message", () => {
+  const status = {
+    segments: [
+      { line: "CCL", lineName: "Circle Line", stations: ["CC10"] },
+      { line: "NSL", lineName: "North South Line", stations: ["NS20"] },
+    ],
+    messages: ["0801hrs: CCL - No train service between Promenade and Bishan.", "0805hrs: NSL - Trains are delayed between Bishan and Novena."],
+    busAdvisories: [],
+  };
+  const busLeg = { service: "901", board: { code: "90011" }, alight: { code: "90031" }, rideMin: 5, walkBeforeMin: 0 };
+  const train = { ...TRAIN_LEG, walkBeforeMin: 1 };
+  const arrivals = { "90011": { services: [{ no: "901", next: { time: at(1) } }] } };
+  // Bus +1, ride 5 -> +6, walk 1 -> platform +7; train at +8 = 1 min spare (tight).
+  const plan = planRoute({ walkFromHomeMin: 0, legs: [busLeg, train] }, arrivals, NOW, {
+    status,
+    trains: { [trainKey(train)]: { departures: [{ time: at(8) }] } },
+  });
+  assert.equal(plan.legs[0].state, "ok");
+  assert.equal(plan.legs[1].state, "disrupted");
+  assert.equal(plan.legs[1].tight, true);
+  assert.equal(plan.status, "disrupted");
+  assert.match(plan.alerts[0].text, /^0805hrs: NSL/, "the NSL leg gets the NSL message, not the first (CCL) one");
+  // No message names the line -> generic text.
+  const quiet = legAlert(TRAIN_LEG, { segments: [{ line: "NSL", lineName: "North South Line", stations: [] }], messages: ["0801hrs: CCL - delay"] });
+  assert.equal(quiet.text, "North South Line: train service disrupted");
+});
+
+test("stationCrowd: per-station real-time and forecast for a line; one failing half is tolerated", async () => {
+  const t = fakeTransport({
+    get_station_crowd: { line: "NSL", stations: [{ station: "NS17", crowd: "low", from: at(-10), to: at(0) }, { station: "NS24", crowd: "high", from: at(-10), to: at(0) }] },
+  });
+  const c = await stationCrowd("NSL", ["NS17", "NS24"], { transport: t, now: NOW });
+  assert.deepEqual(Object.keys(c.now), ["NS17", "NS24"]);
+  assert.equal(c.now.NS24.level, "high");
+  assert.deepEqual(c.forecast.NS17[0], { start: "2026-11-11T08:00:00+08:00", level: "high" });
+  assert.deepEqual(t.calls.find((x) => x.name === "get_station_crowd").args, { train_line: "NSL", station: "NS17,NS24" });
+  clearTrainsCache();
+  const half = await stationCrowd("NSL", [], { transport: fakeTransport({ get_station_crowd_forecast: new Error("down") }), now: NOW });
+  assert.deepEqual(half.forecast, {});
+  assert.equal(half.now.NS17.level, "high");
+  clearTrainsCache();
+  await assert.rejects(stationCrowd("NSL", [], { transport: fakeTransport({ get_station_crowd: new Error("a"), get_station_crowd_forecast: new Error("b") }) }));
+});
+
+test("stationSuggestions groups platforms under one station name with its line codes", () => {
+  const found = {
+    stations: [
+      { stop_id: "CC15", code: "CC15", name: "Bishan", platforms: [{ stop_id: "NS17_A" }, { stop_id: "NS17_B" }, { stop_id: "CC15_A" }] },
+      { stop_id: "BRH", code: null, name: "Braddell", platforms: [{ stop_id: "NS18_A" }] },
+    ],
+  };
+  assert.deepEqual(stationSuggestions(found), [
+    { name: "Bishan", codes: ["CC15", "NS17"] },
+    { name: "Braddell", codes: ["NS18"] },
+  ]);
+});
+
+test("crowd window: real-time within 10 minutes of boarding, forecast after", () => {
+  const crowd = { now: { level: "low" }, forecast: [{ start: at(0), level: "high" }] };
+  assert.equal(crowdAt(crowd, new Date(at(10)), NOW).source, "now");
+  assert.equal(crowdAt(crowd, new Date(at(11)), NOW).source, "forecast");
 });
 
 test("alert line names: timetable codes map to LTA's alert codes", () => {

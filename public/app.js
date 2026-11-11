@@ -156,7 +156,8 @@ function routeCard(route, idx, plan, now) {
         train
           ? el("span", { class: "sched", title: "LTA timetable: LTA publishes no live train arrivals" }, " timetable")
           : p.live === false ? el("span", { class: "sched", title: "Operator's timetable estimate, not live GPS" }, " sched.") : null,
-        i > 0 ? el("span", { class: `tag ${p.state === "tight" ? "tight" : "ok"}` }, ` · ${p.waitMin} min spare`) : extra,
+        i > 0 ? el("span", { class: `tag ${p.tight ? "tight" : "ok"}` }, ` · ${p.waitMin} min spare`) : extra,
+        p.state === "disrupted" ? el("span", { class: "tag bad" }, " · line disrupted") : null,
         p.load ? el("span", { class: `load load-${p.load.toLowerCase()}`, title: LOAD_TITLE[p.load] }, LOAD_LABEL[p.load]) : null,
         p.crowd
           ? el("span", {
@@ -323,7 +324,14 @@ function addLegFieldset(leg) {
     f(name).addEventListener("change", () => lookupStop(fs, name));
   }
   f("mode").addEventListener("change", () => setMode(fs, f("mode").value));
-  for (const name of ["tFrom", "tTo"]) f(name).addEventListener("change", () => checkTrain(fs));
+  // Station search: both station boxes share one suggestion list, filled as you type.
+  const list = fs.querySelector(".station-list");
+  list.id = `stations-${++stationListCount}`;
+  for (const name of ["tFrom", "tTo"]) {
+    f(name).setAttribute("list", list.id);
+    f(name).addEventListener("input", () => suggestStations(list, f(name).value));
+    f(name).addEventListener("change", () => checkTrain(fs));
+  }
   f("tOption").addEventListener("change", () => {
     const o = selectedTrainOption(fs);
     if (o) f("tRide").value = o.ride_min;
@@ -335,6 +343,22 @@ function addLegFieldset(leg) {
   setMode(fs, f("mode").value);
   $("#legs").append(fs);
   relabelLegs();
+}
+
+let stationListCount = 0;
+let suggestTimer = null;
+
+// Fill a station box's suggestions from LTA's station list (debounced while typing).
+function suggestStations(list, text) {
+  clearTimeout(suggestTimer);
+  const q = text.trim();
+  if (q.length < 2) return;
+  suggestTimer = setTimeout(async () => {
+    const body = await getJson(`/api/trains/stations?${new URLSearchParams({ q })}`);
+    list.replaceChildren(
+      ...(body.stations || []).map((s) => el("option", { value: s.name, label: `${s.name} · ${s.codes.join(", ")}` })),
+    );
+  }, 250);
 }
 
 // Show the bus or train inputs; hidden inputs are disabled so they don't block form validation.
