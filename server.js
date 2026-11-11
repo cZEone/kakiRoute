@@ -13,9 +13,10 @@ import {
   checkTrainLeg,
   findTrainStation,
   stationSuggestions,
-  TrainsUnavailable,
+  trainErrorStatus,
   STATION_CODE,
   LINE_CODE,
+  CROWD_LINES,
 } from "./lib/trains.js";
 import { sanitizeRoutes } from "./lib/routes.js";
 
@@ -76,17 +77,23 @@ app.post("/api/decide", async (req, res) => {
     // Weather matching needs stop coordinates; decide on timings alone without them.
   }
   try {
-    const result = await decide(routes, { mock: MOCK, busData });
-    res.status(result.error ? 502 : 200).json(result);
+    sendResult(res, await decide(routes, { mock: MOCK, busData }));
   } catch (err) {
-    res.status(500).json({ error: `Couldn't compare routes: ${err.message}` });
+    console.error("Help me decide failed:", err);
+    res.status(500).json({ error: "Couldn't compare routes. Your live timings still work." });
   }
 });
 
+// Results from decide() and the setup agent carry their own HTTP `status` when they're errors.
+function sendResult(res, result) {
+  const { status, ...body } = result;
+  const failed = Boolean(body.error) || body.type === "error";
+  res.status(failed ? status || 502 : 200).json(body);
+}
+
 // --- Trains (LTA timetable), service status and station crowding, via the MCP server ---
 function trainsError(res, err) {
-  const status = err instanceof TrainsUnavailable ? 503 : 502;
-  res.status(status).json({ error: err.message });
+  res.status(trainErrorStatus(err)).json({ error: err.message });
 }
 
 app.get("/api/train-leg", async (req, res) => {
@@ -94,9 +101,14 @@ app.get("/api/train-leg", async (req, res) => {
   if (![from, to].every((c) => STATION_CODE.test(String(c))) || !LINE_CODE.test(String(line))) {
     return res.status(400).json({ error: "Need from, to (station codes such as NS17) and line (such as NSL)." });
   }
-  const leg = { line: String(line), crowdLine: LINE_CODE.test(String(crowdLine)) ? String(crowdLine) : null, board: { code: String(from) }, alight: { code: String(to) } };
+  const leg = {
+    line: String(line),
+    crowdLine: CROWD_LINES.includes(String(crowdLine)) ? String(crowdLine) : null,
+    board: { code: String(from) },
+    alight: { code: String(to) },
+  };
   try {
-    res.json(await trainLegData(leg));
+    sendResult(res, await trainLegData(leg));
   } catch (err) {
     trainsError(res, err);
   }
@@ -115,8 +127,11 @@ app.get("/api/status", async (req, res) => {
 app.get("/api/crowd/:line", async (req, res) => {
   const line = String(req.params.line).toUpperCase();
   const stations = String(req.query.stations || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
-  if (!LINE_CODE.test(line) || stations.length > 12 || !stations.every((s) => STATION_CODE.test(s))) {
-    return res.status(400).json({ error: "Use a line code such as NSL and up to 12 station codes such as NS17." });
+  if (!CROWD_LINES.includes(line)) {
+    return res.status(400).json({ error: `Unknown line "${line.slice(0, 10)}". Use one of: ${CROWD_LINES.join(", ")}.` });
+  }
+  if (stations.length > 12 || !stations.every((s) => STATION_CODE.test(s))) {
+    return res.status(400).json({ error: "Use up to 12 station codes such as NS17." });
   }
   try {
     res.json(await stationCrowd(line, stations));
@@ -133,7 +148,8 @@ app.get("/api/trains/stations", async (req, res) => {
     const found = await findTrainStation(q);
     res.json({ stations: stationSuggestions(found) });
   } catch (err) {
-    err instanceof TrainsUnavailable ? trainsError(res, err) : res.json({ stations: [] });
+    // No matching station is a normal answer while typing; anything else is a real failure.
+    trainErrorStatus(err) === 422 ? res.json({ stations: [] }) : trainsError(res, err);
   }
 });
 
@@ -145,7 +161,7 @@ app.get("/api/trains/check", async (req, res) => {
   try {
     res.json(await checkTrainLeg(from, to));
   } catch (err) {
-    err instanceof TrainsUnavailable ? trainsError(res, err) : res.status(422).json({ error: err.message });
+    trainsError(res, err);
   }
 });
 
@@ -165,7 +181,7 @@ app.post("/api/setup/start", async (req, res) => {
   if (!text) return res.status(400).json({ type: "error", message: "Describe your route first." });
   if (text.length > 2000) return res.status(400).json({ type: "error", message: "Please keep the description shorter." });
   try {
-    res.json(await (await getAgent()).start(text));
+    sendResult(res, await (await getAgent()).start(text));
   } catch (err) {
     res.status(503).json({ type: "error", message: `Route setup unavailable: ${err.message}` });
   }
@@ -175,10 +191,29 @@ app.post("/api/setup/reply", async (req, res) => {
   const { sessionId, text } = req.body || {};
   if (!sessionId || !String(text || "").trim()) return res.status(400).json({ type: "error", message: "Missing answer." });
   try {
-    res.json(await (await getAgent()).reply(String(sessionId), String(text).slice(0, 1000)));
+    sendResult(res, await (await getAgent()).reply(String(sessionId), String(text).slice(0, 1000)));
   } catch (err) {
     res.status(503).json({ type: "error", message: `Route setup unavailable: ${err.message}` });
   }
+});
+
+// --- Fallbacks: favicon, unknown API routes, and errors as JSON (never stack traces) ---
+// Pages declare icon.svg, but some browsers and crawlers still ask for /favicon.ico.
+app.get("/favicon.ico", (req, res) => res.redirect(301, "/icon.svg"));
+
+app.use("/api", (req, res) => res.status(404).json({ error: `No such API endpoint: ${req.method} ${req.baseUrl}${req.path}` }));
+
+// Body-parser errors (bad JSON, body too large) and anything thrown in a handler. Express's default
+// handler would send an HTML page with the stack trace (server file paths) outside production.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const status = Number(err.status || err.statusCode) || 500;
+  let message = "Something went wrong on the server.";
+  if (err.type === "entity.parse.failed") message = "The request body isn't valid JSON.";
+  else if (err.type === "entity.too.large") message = "The request is too large.";
+  else if (status < 500 && err.expose) message = err.message;
+  if (status >= 500) console.error(`${req.method} ${req.originalUrl} failed:`, err);
+  res.status(status).json({ error: message });
 });
 
 // --- Official LTA data via the sg-transport MCP server (./mcp), if configured ---

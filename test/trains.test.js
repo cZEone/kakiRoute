@@ -12,6 +12,7 @@ import {
   trainLegFromOption,
   clearTrainsCache,
   TrainsUnavailable,
+  trainErrorStatus,
 } from "../lib/trains.js";
 import { sanitizeRoutes } from "../lib/routes.js";
 import { planRoute, crowdAt, legAlert, alertLine, trainKey } from "../public/timing.js";
@@ -254,6 +255,24 @@ test("crowd window: real-time within 10 minutes of boarding, forecast after", ()
   const crowd = { now: { level: "low" }, forecast: [{ start: at(0), level: "high" }] };
   assert.equal(crowdAt(crowd, new Date(at(10)), NOW).source, "now");
   assert.equal(crowdAt(crowd, new Date(at(11)), NOW).source, "forecast");
+});
+
+test("train errors map to HTTP statuses, and MCP validation details stay internal", async () => {
+  assert.equal(trainErrorStatus(new TrainsUnavailable("x")), 503);
+  assert.equal(trainErrorStatus(new Error("No train station matches 'ZZ99'.")), 422);
+  assert.equal(trainErrorStatus(new Error("No direct train from A to B today.")), 422);
+  assert.equal(trainErrorStatus(new Error("Could not reach LTA DataMall")), 502);
+  const pydantic = new Error("1 validation error for get_station_crowdArguments\ntrain_line\n  Input should be 'CCL'");
+  const t = fakeTransport({ get_station_crowd: pydantic, get_station_crowd_forecast: pydantic });
+  await assert.rejects(stationCrowd("XYZ", [], { transport: t }), (err) => {
+    assert.equal(err.message, "Invalid input for get_station_crowd.");
+    assert.equal(trainErrorStatus(err), 400);
+    return true;
+  });
+  // trainLegData reports the status with its error, so /api/train-leg can return it.
+  clearTrainsCache();
+  const unknown = await trainLegData(TRAIN_LEG, { transport: fakeTransport({ get_scheduled_train_departures: new Error("No train station matches 'NS17'.") }), now: NOW });
+  assert.equal(unknown.status, 422);
 });
 
 test("alert line names: timetable codes map to LTA's alert codes", () => {

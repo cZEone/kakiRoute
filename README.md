@@ -133,6 +133,18 @@ The browser talks to these server endpoints. Train, crowd and status endpoints n
 | `GET /api/stops/:code` | Bus stop name and services (route editor) |
 | `POST /api/decide`, `POST /api/setup/start`, `POST /api/setup/reply` | Help me decide, and the AI route setup chat |
 
+Errors are always JSON (`{ "error": "…" }`, or `{ "type": "error", "message": "…" }` for the setup chat), never HTML or stack traces:
+
+| Status | Meaning |
+|---|---|
+| 400 | Bad input: wrong code format, unknown line, fewer than two routes, invalid JSON |
+| 404 | Unknown stop, unknown API endpoint, or an expired setup chat |
+| 413 | Request body over 32 KB |
+| 422 | Valid request that can't be answered: unknown station, or no direct train between two stations |
+| 429 | The AI provider's usage limit was hit |
+| 502 | An upstream service failed: LTA, the MCP server, arrivelah, or the AI provider |
+| 503 | Not configured on this server: no `LTA_ACCOUNT_KEY` (trains, crowding, status) or no `OPENCODE_API_KEY` (AI features) |
+
 ## Layout
 
 | Path | What it is |
