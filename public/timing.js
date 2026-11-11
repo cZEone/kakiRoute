@@ -36,42 +36,103 @@ export function arrivalTimes(arrivalsBody, serviceNo) {
   return arrivalBuses(arrivalsBody, serviceNo)?.map((b) => b.time) ?? null;
 }
 
-// route: { walkFromHomeMin, legs: [{ service, board:{code}, alight:{code}, rideMin, walkBeforeMin }] }
-// arrivalsByStop: { [code]: arrivelah body | { error } }
-export function planRoute(route, arrivalsByStop, now = new Date()) {
+// Station crowd levels from LTA (per station, not per platform or carriage).
+export const CROWD_LABEL = { low: "Quiet", moderate: "Busy", high: "Packed" };
+const CROWD_NOW_MIN = 15; // within this many minutes, the real-time level beats the forecast
+const SLOT_MIN = 30; // LTA forecasts crowding in 30-minute slots
+
+export const isTrain = (leg) => leg?.mode === "train";
+
+// Key for a train leg's data in planRoute's `trains` map (the client and "Help me decide" both use it).
+export function trainKey(leg) {
+  return `${leg.line}:${leg.board.code}>${leg.alight.code}:${leg.crowdLine || ""}`;
+}
+
+// LTA's train alerts name lines slightly differently from the timetable (GTFS) line codes.
+const ALERT_LINE = { BP: "BPL", SK: "STL", SLRT: "STL", PG: "PTL", PLRT: "PTL", CGL: "EWL", CEL: "CCL" };
+export const alertLine = (line) => ALERT_LINE[String(line).toUpperCase()] || String(line).toUpperCase();
+
+// Crowd at the boarding station when you'd board: real-time level if soon, else the 30-min forecast.
+export function crowdAt(crowd, when, now) {
+  if (!crowd || !when) return null;
+  if (crowd.now?.level && CROWD_LABEL[crowd.now.level] && Math.abs(when - now) <= CROWD_NOW_MIN * 60000) {
+    return { level: crowd.now.level, source: "now" };
+  }
+  for (const slot of crowd.forecast || []) {
+    const start = new Date(slot.start);
+    if (start <= when && when < addMin(start, SLOT_MIN) && CROWD_LABEL[slot.level]) return { level: slot.level, source: "forecast" };
+  }
+  return null;
+}
+
+// Service alerts that affect one leg: a disrupted train line, or a bus service LTA says is delayed/diverted.
+export function legAlert(leg, status) {
+  if (!status) return null;
+  if (isTrain(leg)) {
+    const seg = (status.segments || []).find((s) => alertLine(s.line) === alertLine(leg.line));
+    if (!seg) return null;
+    const hits = (seg.stations || []).filter((c) => c === leg.board.code || c === leg.alight.code);
+    return {
+      kind: "disruption",
+      line: seg.line,
+      text: (status.messages || [])[0] || `${seg.lineName || seg.line}: train service disrupted`,
+      atYourStations: hits,
+      freeBus: seg.freeBus || null,
+    };
+  }
+  const svc = String(leg.service).toUpperCase();
+  const adv = (status.busAdvisories || []).find((a) => (a.services || []).some((s) => String(s).toUpperCase() === svc));
+  return adv ? { kind: adv.kind, text: adv.message, delayUpToMin: adv.delayUpToMin ?? null } : null;
+}
+
+// route: { walkFromHomeMin, legs: [bus leg | train leg] }
+//   bus leg:   { service, board:{code}, alight:{code}, rideMin, walkBeforeMin }
+//   train leg: { mode: "train", line, crowdLine, towards, board:{code}, alight:{code}, rideMin, walkBeforeMin }
+// arrivalsByStop: { [bus stop code]: arrivals body | { error } }
+// extras.trains: { [trainKey(leg)]: { departures: [{ time, towards }], crowd } | { error } }
+// extras.status: service status (train disruptions + bus advisories), or null
+//
+// Every leg gets `bus`: the Date the vehicle you'd catch leaves (a bus, or a scheduled train).
+export function planRoute(route, arrivalsByStop, now = new Date(), { trains = {}, status = null } = {}) {
   const legs = [];
   let t = addMin(now, route.walkFromHomeMin || 0);
-  let status = "ok";
+  let planStatus = "ok";
+  const alerts = route.legs.map((leg, i) => ({ leg: i, ...legAlert(leg, status) })).filter((a) => a.kind);
+  if (alerts.some((a) => a.kind === "disruption")) planStatus = "disrupted";
 
   for (let i = 0; i < route.legs.length; i++) {
     const leg = route.legs[i];
     if (i > 0) t = addMin(t, leg.walkBeforeMin || 0);
     const atStop = t;
-    const body = arrivalsByStop[leg.board.code];
+    const train = isTrain(leg);
+    const body = train ? trains[trainKey(leg)] : arrivalsByStop[leg.board.code];
 
     if (!body || body.error) {
       legs.push({ ...leg, state: "unavailable", atStop });
-      status = "unavailable";
+      planStatus = worst(planStatus, "unavailable");
       break;
     }
-    const buses = arrivalBuses(body, leg.service);
-    if (!buses || buses.length === 0) {
+    const vehicles = train ? scheduledTrains(body) : arrivalBuses(body, leg.service);
+    if (!vehicles || vehicles.length === 0) {
       legs.push({ ...leg, state: "no-service", atStop });
-      status = worst(status, "no-service");
+      planStatus = worst(planStatus, "no-service");
       break;
     }
-    const caught = buses.find((b) => b.time >= atStop);
+    const caught = vehicles.find((v) => v.time >= atStop);
     if (!caught) {
-      legs.push({ ...leg, state: "beyond-data", atStop, lastKnown: buses[buses.length - 1].time });
-      status = worst(status, "beyond-data");
+      legs.push({ ...leg, state: "beyond-data", atStop, lastKnown: vehicles[vehicles.length - 1].time });
+      planStatus = worst(planStatus, "beyond-data");
       break;
     }
     const bus = caught.time;
     const waitMin = Math.round((bus - atStop) / 60000);
     const tight = i > 0 && waitMin < TIGHT_BUFFER_MIN;
-    const missedEarlier = buses.filter((b) => b.time < atStop).length; // buses that leave before you get there
-    legs.push({ ...leg, state: tight ? "tight" : "ok", atStop, bus, waitMin, missedEarlier, load: caught.load, live: caught.live });
-    if (tight) status = worst(status, "tight");
+    const missedEarlier = vehicles.filter((v) => v.time < atStop).length; // ones that leave before you get there
+    const extra = train
+      ? { live: false, scheduled: true, towards: caught.towards || leg.towards || null, crowd: crowdAt(body.crowd, bus, now) }
+      : { load: caught.load, live: caught.live };
+    legs.push({ ...leg, state: tight ? "tight" : "ok", atStop, bus, waitMin, missedEarlier, ...extra, alert: alerts.find((a) => a.leg === i) || null });
+    if (tight) planStatus = worst(planStatus, "tight");
     t = addMin(bus, leg.rideMin || 0);
   }
 
@@ -79,15 +140,23 @@ export function planRoute(route, arrivalsByStop, now = new Date()) {
   const first = legs[0];
   return {
     legs,
-    status,
+    status: planStatus,
+    alerts,
     complete,
     arriveAt: complete ? t : null,
-    // When to walk out the door to catch the first bus you can make.
+    // When to walk out the door to catch the first bus (or train) you can make.
     leaveBy: first?.bus ? addMin(first.bus, -(route.walkFromHomeMin || 0)) : null,
   };
 }
 
-const RANK = { ok: 0, tight: 1, "beyond-data": 2, "no-service": 3, unavailable: 4 };
+function scheduledTrains(body) {
+  return (body.departures || [])
+    .map((d) => ({ time: new Date(d.time), towards: d.towards || null }))
+    .filter((d) => !Number.isNaN(d.time.getTime()))
+    .sort((a, b) => a.time - b.time);
+}
+
+const RANK = { ok: 0, tight: 1, disrupted: 2, "beyond-data": 3, "no-service": 4, unavailable: 5 };
 function worst(a, b) {
   return RANK[b] > RANK[a] ? b : a;
 }

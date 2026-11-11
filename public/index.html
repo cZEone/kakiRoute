@@ -76,11 +76,18 @@
   <template id="leg-template">
     <fieldset class="leg">
       <legend></legend>
+      <div class="mode-row">
+        <span class="label">Take a</span>
+        <select name="mode" class="mode-select" aria-label="Bus or train">
+          <option value="bus">Bus</option>
+          <option value="train">Train (MRT / LRT)</option>
+        </select>
+      </div>
       <div class="walk-before">
         <label class="label">Minutes walking from the last stop to this one</label>
         <input name="walkBeforeMin" type="number" min="0" max="30" value="0" inputmode="numeric">
       </div>
-      <div class="grid">
+      <div class="grid bus-fields">
         <div>
           <label class="label">Bus</label>
           <input name="service" type="text" required maxlength="5" placeholder="961" autocapitalize="characters">
@@ -99,6 +106,23 @@
           <input name="alight" type="text" required pattern="\d{5}" maxlength="5" placeholder="44331" inputmode="numeric">
           <small class="stopname" data-for="alight"></small>
         </div>
+      </div>
+      <div class="train-fields" hidden>
+        <div class="grid">
+          <div>
+            <label class="label">From station</label>
+            <input name="tFrom" type="text" required maxlength="40" placeholder="Bishan or NS17" autocomplete="off">
+          </div>
+          <div>
+            <label class="label">To station</label>
+            <input name="tTo" type="text" required maxlength="40" placeholder="Dhoby Ghaut" autocomplete="off">
+          </div>
+        </div>
+        <label class="label">Line and direction</label>
+        <select name="tOption" required></select>
+        <small class="train-status" aria-live="polite"></small>
+        <label class="label">Ride (min)</label>
+        <input name="tRide" type="number" min="1" max="180" required value="10" inputmode="numeric">
       </div>
       <button type="button" class="link-btn remove-leg">Remove this transfer</button>
     </fieldset>
